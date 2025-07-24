@@ -31,4 +31,7 @@ jobs:
         env:
           LOYVERSE_TOKEN: ${{ secrets.LOYVERSE_TOKEN }}
         run: |
+          echo "${{ secrets.GCP_CREDENTIALS }}" > gcp_key.json
+          export GOOGLE_APPLICATION_CREDENTIALS="gcp_key.json"
           python daily_loyverse_pull.py
+
