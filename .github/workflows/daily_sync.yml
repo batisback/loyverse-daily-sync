@@ -3,7 +3,7 @@ name: Daily Loyverse Sync
 on:
   schedule:
     - cron: '0 0 * * *'  # Runs every day at 00:00 UTC (8AM PH time)
-  workflow_dispatch:     # Allows manual triggering
+  workflow_dispatch:     # Allows manual triggering from GitHub UI
 
 jobs:
   run-sync:
@@ -24,14 +24,12 @@ jobs:
 
       - name: Set up credentials
         run: |
-          echo "${{ secrets.GCP_CREDENTIALS }}" > gcp_key.json
+          echo "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}" > gcp_key.json
           export GOOGLE_APPLICATION_CREDENTIALS="gcp_key.json"
 
-      - name: Run script
+      - name: Run daily Loyverse pull
         env:
           LOYVERSE_TOKEN: ${{ secrets.LOYVERSE_TOKEN }}
         run: |
-          echo "${{ secrets.GCP_CREDENTIALS }}" > gcp_key.json
           export GOOGLE_APPLICATION_CREDENTIALS="gcp_key.json"
           python daily_loyverse_pull.py
-
