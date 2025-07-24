@@ -22,11 +22,13 @@ jobs:
         run: |
           pip install requests pandas google-cloud-bigquery
 
+      - name: Set up credentials
+        run: |
+          echo "${{ secrets.GCP_CREDENTIALS }}" > gcp_key.json
+          export GOOGLE_APPLICATION_CREDENTIALS="gcp_key.json"
+
       - name: Run script
         env:
-          GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GCP_CREDENTIALS }}
           LOYVERSE_TOKEN: ${{ secrets.LOYVERSE_TOKEN }}
         run: |
-          echo "$GOOGLE_APPLICATION_CREDENTIALS_JSON" > gcp_key.json
-          export GOOGLE_APPLICATION_CREDENTIALS="gcp_key.json"
           python daily_loyverse_pull.py
