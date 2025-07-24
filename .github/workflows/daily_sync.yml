@@ -24,7 +24,7 @@ jobs:
 
       - name: Set up credentials
         run: |
-          echo "${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}" > gcp_key.json
+          echo "${{ secrets.GCP_KEY_B64 }}" | base64 --decode > gcp_key.json
           export GOOGLE_APPLICATION_CREDENTIALS="gcp_key.json"
 
       - name: Run daily Loyverse pull
