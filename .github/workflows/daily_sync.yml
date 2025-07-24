@@ -1,0 +1,32 @@
+name: Daily Loyverse Sync
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Runs every day at 00:00 UTC (8AM PH time)
+  workflow_dispatch:     # Allows manual triggering
+
+jobs:
+  run-sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests pandas google-cloud-bigquery
+
+      - name: Run script
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GCP_CREDENTIALS }}
+          LOYVERSE_TOKEN: ${{ secrets.LOYVERSE_TOKEN }}
+        run: |
+          echo "$GOOGLE_APPLICATION_CREDENTIALS_JSON" > gcp_key.json
+          export GOOGLE_APPLICATION_CREDENTIALS="gcp_key.json"
+          python daily_loyverse_pull.py
