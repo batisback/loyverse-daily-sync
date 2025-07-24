@@ -3,14 +3,14 @@ name: Daily Loyverse Sync
 on:
   schedule:
     - cron: '0 0 * * *'  # Runs every day at 00:00 UTC (8AM PH time)
-  workflow_dispatch:     # Allows manual triggering from GitHub UI
+  workflow_dispatch:     # Allows manual trigger from GitHub UI
 
 jobs:
   run-sync:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Set up Python
@@ -20,16 +20,17 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests pandas google-cloud-bigquery
+          pip install requests pandas google-cloud-bigquery pyarrow
 
-      - name: Set up credentials
+      - name: Decode and set up GCP credentials
         run: |
           echo "${{ secrets.GCP_KEY_B64 }}" | base64 --decode > gcp_key.json
-          export GOOGLE_APPLICATION_CREDENTIALS="gcp_key.json"
+        env:
+          GCP_KEY_B64: ${{ secrets.GCP_KEY_B64 }}
 
       - name: Run daily Loyverse pull
         env:
           LOYVERSE_TOKEN: ${{ secrets.LOYVERSE_TOKEN }}
+          GOOGLE_APPLICATION_CREDENTIALS: gcp_key.json
         run: |
-          export GOOGLE_APPLICATION_CREDENTIALS="gcp_key.json"
           python daily_loyverse_pull.py
