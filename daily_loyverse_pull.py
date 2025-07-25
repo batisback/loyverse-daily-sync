@@ -17,20 +17,23 @@ project_id = "loyverse-anomaly-warehouse"
 dataset_id = "loyverse_data"
 client = bigquery.Client(project=project_id)
 
-# 📆 Set date range for the previous day in PH time (UTC+8)
+# 📆 Set date range for the past 48 hours in PH time (UTC+8)
 today_ph = datetime.now()
-yesterday_ph = today_ph - timedelta(days=1)
+start_ph = today_ph - timedelta(days=2)  # 48 hours ago
+end_ph = today_ph - timedelta(days=0)    # now
 
-ph_start = yesterday_ph.replace(hour=0, minute=0, second=0, microsecond=0)
-ph_end = yesterday_ph.replace(hour=23, minute=59, second=59, microsecond=999999)
+ph_start = start_ph.replace(hour=0, minute=0, second=0, microsecond=0)
+ph_end = end_ph.replace(hour=23, minute=59, second=59, microsecond=999999)
 
-# Convert to UTC
+# Convert to UTC for API
 utc_start = (ph_start - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
 utc_end = (ph_end - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+
+# Use PH date of start for naming
 date_str = ph_start.strftime("%Y_%m_%d")
 
 def pull_and_upload(entity_name, url, key_name):
-    print(f"📦 Pulling {entity_name} for {ph_start.strftime('%Y-%m-%d')}...")
+    print(f"📦 Pulling {entity_name} from {ph_start.strftime('%Y-%m-%d')} to {ph_end.strftime('%Y-%m-%d')}...")
     data_collected = []
     params = {
         "created_at_min": utc_start,
