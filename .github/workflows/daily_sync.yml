@@ -1,4 +1,4 @@
-name: Daily Loyverse Sync
+run: python merge_shifts_may_2025.py
 
 on:
   schedule:
