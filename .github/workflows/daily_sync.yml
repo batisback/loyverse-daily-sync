@@ -1,4 +1,4 @@
-run: python merge_shifts_may_2025.py
+name: Loyverse Daily Sync
 
 on:
   schedule:
@@ -28,7 +28,7 @@ jobs:
         env:
           GCP_KEY_B64: ${{ secrets.GCP_KEY_B64 }}
 
-      - name: Run daily Loyverse pull
+      - name: Run merge script (TEMP)
         env:
           LOYVERSE_TOKEN: ${{ secrets.LOYVERSE_TOKEN }}
           GOOGLE_APPLICATION_CREDENTIALS: gcp_key.json
