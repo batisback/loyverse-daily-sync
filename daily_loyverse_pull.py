@@ -56,13 +56,21 @@ def pull_and_upload(entity_name, url, key_name):
         params["cursor"] = next_cursor
 
     if data_collected:
-        df = pd.json_normalize(data_collected)
+        df = pd.json_normalize(data_collected, sep="_")
+
         table_id = f"{project_id}.{dataset_id}.{entity_name}_{date_str}"
-        job = client.load_table_from_dataframe(df, table_id)
+
+        job_config = bigquery.LoadJobConfig(
+            write_disposition="WRITE_TRUNCATE",  # always overwrite daily table
+            autodetect=True,
+        )
+
+        job = client.load_table_from_dataframe(df, table_id, job_config=job_config)
         job.result()
         print(f"✅ Uploaded {len(df)} records to BigQuery: {table_id}")
     else:
         print(f"⚠️ No {entity_name} found.")
+
 
 def merge_into_final(table_type):
     table_date = ph_start.strftime("%Y_%m_%d")
