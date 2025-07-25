@@ -28,9 +28,7 @@ jobs:
         env:
           GCP_KEY_B64: ${{ secrets.GCP_KEY_B64 }}
 
-      - name: Run merge script (TEMP)
+      - name: Run shift fix
         env:
-          LOYVERSE_TOKEN: ${{ secrets.LOYVERSE_TOKEN }}
           GOOGLE_APPLICATION_CREDENTIALS: gcp_key.json
-        run: |
-          python merge_shifts_may_2025.py
+        run: python fix_shifts_cash_movements.py
