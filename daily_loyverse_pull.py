@@ -19,8 +19,8 @@ client = bigquery.Client(project=project_id)
 
 # 📆 Set date range for the past 48 hours in PH time (UTC+8)
 today_ph = datetime.now()
-start_ph = today_ph - timedelta(days=2)  # 48 hours ago
-end_ph = today_ph - timedelta(days=0)    # now
+start_ph = today_ph - timedelta(days=2)
+end_ph = today_ph
 
 ph_start = start_ph.replace(hour=0, minute=0, second=0, microsecond=0)
 ph_end = end_ph.replace(hour=23, minute=59, second=59, microsecond=999999)
@@ -29,7 +29,7 @@ ph_end = end_ph.replace(hour=23, minute=59, second=59, microsecond=999999)
 utc_start = (ph_start - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
 utc_end = (ph_end - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
 
-# Use PH date of start for naming
+# For table name based on earliest day
 date_str = ph_start.strftime("%Y_%m_%d")
 
 def pull_and_upload(entity_name, url, key_name):
@@ -64,6 +64,27 @@ def pull_and_upload(entity_name, url, key_name):
     else:
         print(f"⚠️ No {entity_name} found.")
 
+def merge_into_final(table_type):
+    table_date = ph_start.strftime("%Y_%m_%d")
+    temp_table = f"{dataset_id}.{table_type}_{table_date}"
+    final_table = f"{dataset_id}.final_{table_type}"
+    id_field = "receipt_number" if table_type == "receipts" else "id"
+
+    merge_sql = f"""
+        MERGE `{project_id}.{final_table}` AS target
+        USING `{project_id}.{temp_table}` AS source
+        ON target.{id_field} = source.{id_field}
+        WHEN NOT MATCHED THEN
+          INSERT ROW
+    """
+
+    print(f"🔁 Merging {table_type}_{table_date} into final_{table_type}...")
+    client.query(merge_sql).result()
+    print(f"✅ Merge complete for final_{table_type}")
+
 # 🔁 Run for both Receipts and Shifts
 pull_and_upload("receipts", RECEIPT_URL, "receipts")
+merge_into_final("receipts")
+
 pull_and_upload("shifts", SHIFT_URL, "shifts")
+merge_into_final("shifts")
