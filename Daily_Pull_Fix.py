@@ -134,28 +134,35 @@ def merge_into_final(table_type, date_str):
         raise
 
 # ==============================================================================
-# 🚀 MAIN EXECUTION (Daily Run with 48-Hour Buffer)
+# 🚀 MAIN EXECUTION
 # ==============================================================================
-today = datetime.now()
-PULL_START_DATE = (today - timedelta(days=2)).replace(hour=0, minute=0, second=0, microsecond=0)
-PULL_END_DATE = (today - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
-current_date = PULL_START_DATE
-while current_date <= PULL_END_DATE:
+# --- Define the date range for the TEST backfill ---
+BACKFILL_START_DATE = datetime(2025, 7, 1)
+BACKFILL_END_DATE = datetime(2025, 7, 23)
+
+# --- Loop through each day in the range ---
+current_date = BACKFILL_START_DATE
+while current_date <= BACKFILL_END_DATE:
     date_to_process = current_date
     print(f"\n==================== PROCESSING DATE: {date_to_process.strftime('%Y-%m-%d')} ====================")
-    start_ph = date_to_process
+
+    # Define the time window for the current day in the loop
+    start_ph = date_to_process.replace(hour=0, minute=0, second=0, microsecond=0)
     end_ph = start_ph.replace(hour=23, minute=59, second=59, microsecond=999999)
     utc_start = (start_ph - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
     utc_end = (end_ph - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
     date_str = start_ph.strftime("%Y_%m_%d")
 
+    # Run the process for the current day
     if pull_and_upload("receipts", RECEIPT_URL, "receipts", utc_start, utc_end, date_str):
         merge_into_final("receipts", date_str)
     
     if pull_and_upload("shifts", SHIFT_URL, "shifts", utc_start, utc_end, date_str):
         merge_into_final("shifts", date_str)
 
+    # Move to the next day
     current_date += timedelta(days=1)
 
-print("\n\n✅ Daily 48-hour sync complete! ✅")
+print("\n\n🎉🎉🎉 Test Backfill Complete! 🎉🎉🎉")
+```
