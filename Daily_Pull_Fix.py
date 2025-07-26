@@ -140,10 +140,9 @@ def merge_into_final(table_type, date_str):
 # 🚀 MAIN EXECUTION
 # ==============================================================================
 
-# --- Define the date range for the backfill ---
-BACKFILL_START_DATE = datetime(2025, 5, 1)
-# Pull data up to and including yesterday
-BACKFILL_END_DATE = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+# --- Define the date range for the TEST backfill ---
+BACKFILL_START_DATE = datetime(2025, 7, 14)
+BACKFILL_END_DATE = datetime(2025, 7, 24)
 
 # --- Loop through each day in the range ---
 current_date = BACKFILL_START_DATE
@@ -168,4 +167,4 @@ while current_date <= BACKFILL_END_DATE:
     # Move to the next day
     current_date += timedelta(days=1)
 
-print("\n\n🎉🎉🎉 Backfill Complete! 🎉🎉🎉")
+print("\n\n🎉🎉🎉 Test Backfill Complete! 🎉🎉🎉")
