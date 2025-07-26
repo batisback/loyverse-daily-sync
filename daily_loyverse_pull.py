@@ -2,8 +2,9 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 from google.cloud import bigquery
+import json
 
-# 🔐 Loyverse API
+# 🔐 Loyverse API setup
 LOYVERSE_TOKEN = "53dbaaeae21541fb89080b0688fc0969"
 HEADERS = {
     "Authorization": f"Bearer {LOYVERSE_TOKEN}",
@@ -12,28 +13,41 @@ HEADERS = {
 RECEIPT_URL = "https://api.loyverse.com/v1.0/receipts"
 SHIFT_URL = "https://api.loyverse.com/v1.0/shifts"
 
-# 📊 BigQuery
+# 📊 BigQuery setup
 project_id = "loyverse-anomaly-warehouse"
 dataset_id = "loyverse_data"
 client = bigquery.Client(project=project_id)
 
-# 📆 Set date range for the past 48 hours in PH time (UTC+8)
+# 📆 Define PH time range for previous full day
 today_ph = datetime.now()
-start_ph = today_ph - timedelta(days=2)
-end_ph = today_ph
+start_ph = (today_ph - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+end_ph = start_ph.replace(hour=23, minute=59, second=59, microsecond=999999)
 
-ph_start = start_ph.replace(hour=0, minute=0, second=0, microsecond=0)
-ph_end = end_ph.replace(hour=23, minute=59, second=59, microsecond=999999)
+# Convert to UTC
+utc_start = (start_ph - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+utc_end = (end_ph - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+date_str = start_ph.strftime("%Y_%m_%d")  # for table name
 
-# Convert to UTC for API
-utc_start = (ph_start - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
-utc_end = (ph_end - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+def fix_shifts_df(df):
+    # Ensure taxes is ARRAY<INT64>
+    if "taxes" in df.columns:
+        df["taxes"] = df["taxes"].apply(
+            lambda x: [int(t) for t in x] if isinstance(x, list) else []
+        )
 
-# For table name based on earliest day
-date_str = ph_start.strftime("%Y_%m_%d")
+    # Ensure cash_movements is ARRAY<STRUCT> or empty list
+    if "cash_movements" in df.columns:
+        def fix_movements(x):
+            if isinstance(x, list) and all(isinstance(i, dict) for i in x):
+                return x
+            return []
+        df["cash_movements"] = df["cash_movements"].apply(fix_movements)
+
+    return df
 
 def pull_and_upload(entity_name, url, key_name):
-    print(f"📦 Pulling {entity_name} from {ph_start.strftime('%Y-%m-%d')} to {ph_end.strftime('%Y-%m-%d')}...")
+    print(f"\n📦 Pulling {entity_name} from {start_ph.strftime('%Y-%m-%d')}...")
+
     data_collected = []
     params = {
         "created_at_min": utc_start,
@@ -58,10 +72,12 @@ def pull_and_upload(entity_name, url, key_name):
     if data_collected:
         df = pd.json_normalize(data_collected, sep="_")
 
-        table_id = f"{project_id}.{dataset_id}.{entity_name}_{date_str}"
+        if entity_name == "shifts":
+            df = fix_shifts_df(df)
 
+        table_id = f"{project_id}.{dataset_id}.{entity_name}_{date_str}"
         job_config = bigquery.LoadJobConfig(
-            write_disposition="WRITE_TRUNCATE",  # always overwrite daily table
+            write_disposition="WRITE_TRUNCATE",
             autodetect=True,
         )
 
@@ -71,10 +87,8 @@ def pull_and_upload(entity_name, url, key_name):
     else:
         print(f"⚠️ No {entity_name} found.")
 
-
 def merge_into_final(table_type):
-    table_date = ph_start.strftime("%Y_%m_%d")
-    temp_table = f"{dataset_id}.{table_type}_{table_date}"
+    temp_table = f"{dataset_id}.{table_type}_{date_str}"
     final_table = f"{dataset_id}.final_{table_type}"
     id_field = "receipt_number" if table_type == "receipts" else "id"
 
@@ -86,11 +100,11 @@ def merge_into_final(table_type):
           INSERT ROW
     """
 
-    print(f"🔁 Merging {table_type}_{table_date} into final_{table_type}...")
+    print(f"\n🔁 Merging {table_type}_{date_str} into final_{table_type}...")
     client.query(merge_sql).result()
     print(f"✅ Merge complete for final_{table_type}")
 
-# 🔁 Run for both Receipts and Shifts
+# 🔁 Pull & upload + merge both Receipts and Shifts
 pull_and_upload("receipts", RECEIPT_URL, "receipts")
 merge_into_final("receipts")
 
