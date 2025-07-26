@@ -137,21 +137,26 @@ def merge_into_final(table_type, date_str):
         raise
 
 # ==============================================================================
-# 🚀 MAIN EXECUTION
+# 🚀 MAIN EXECUTION (Daily Run with 48-Hour Buffer)
 # ==============================================================================
 
-# --- Define the date range for the TEST backfill ---
-BACKFILL_START_DATE = datetime(2025, 6, 1)
-BACKFILL_END_DATE = datetime(2025, 6, 30)
+# --- Define the 48-hour window for the daily pull ---
+# This will be run in your timezone (Philippines, UTC+8)
+today = datetime.now() 
+# The day before yesterday
+PULL_START_DATE = (today - timedelta(days=2)).replace(hour=0, minute=0, second=0, microsecond=0)
+# Yesterday
+PULL_END_DATE = (today - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
-# --- Loop through each day in the range ---
-current_date = BACKFILL_START_DATE
-while current_date <= BACKFILL_END_DATE:
+
+# --- Loop through each day in the 48-hour window ---
+current_date = PULL_START_DATE
+while current_date <= PULL_END_DATE:
     date_to_process = current_date
     print(f"\n==================== PROCESSING DATE: {date_to_process.strftime('%Y-%m-%d')} ====================")
 
     # Define the time window for the current day in the loop
-    start_ph = date_to_process.replace(hour=0, minute=0, second=0, microsecond=0)
+    start_ph = date_to_process # Already set to the beginning of the day
     end_ph = start_ph.replace(hour=23, minute=59, second=59, microsecond=999999)
     utc_start = (start_ph - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
     utc_end = (end_ph - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
@@ -167,4 +172,4 @@ while current_date <= BACKFILL_END_DATE:
     # Move to the next day
     current_date += timedelta(days=1)
 
-print("\n\n🎉🎉🎉 Test Backfill Complete! 🎉🎉🎉")
+print("\n\n✅ Daily 48-hour sync complete! ✅")
