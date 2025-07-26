@@ -9,23 +9,19 @@ start_date = datetime(2025, 6, 1)
 end_date = datetime(2025, 7, 24) 
 
 def merge_shifts_for_date(date_obj):
-    table_suffix = date_obj.strftime("%%Y_%%m_%%d")
+    # This line has been corrected from '%%' to '%'
+    table_suffix = date_obj.strftime("%Y_%m_%d")
+    
     temp_table = f"{dataset_id}.shifts_{table_suffix}"
     final_table = f"{dataset_id}.final_shifts"
 
-    # Final robust MERGE statement using TO_JSON_STRING for all transformations
     merge_sql = f"""
         MERGE `{project_id}.{final_table}` AS target
         USING (
           SELECT
             * EXCEPT (cash_movements, taxes),
-            
-            -- This line safely converts the cash_movements column to an array of strings
             COALESCE((SELECT ARRAY_AGG(TO_JSON_STRING(c)) FROM UNNEST(cash_movements) AS c), []) AS cash_movements,
-            
-            -- This line safely converts the taxes column (STRUCT or INT) to an array of strings
             COALESCE((SELECT ARRAY_AGG(TO_JSON_STRING(t)) FROM UNNEST(taxes) AS t), []) AS taxes
-            
           FROM
             `{project_id}.{temp_table}`
         ) AS source
