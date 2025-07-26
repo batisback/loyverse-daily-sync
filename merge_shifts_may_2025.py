@@ -13,19 +13,32 @@ def merge_shifts_for_date(date_obj):
     temp_table = f"{dataset_id}.shifts_{table_suffix}"
     final_table = f"{dataset_id}.final_shifts"
 
+    # Corrected MERGE statement
     merge_sql = f"""
         MERGE `{project_id}.{final_table}` AS target
-        USING `{project_id}.{temp_table}` AS source
+        USING (
+          -- This subquery transforms the source data to match the target schema
+          SELECT
+            * EXCEPT (cash_movements),
+            (SELECT ARRAY_AGG(TO_JSON_STRING(c)) FROM UNNEST(cash_movements) AS c) AS cash_movements
+          FROM
+            `{project_id}.{temp_table}`
+        ) AS source
         ON target.id = source.id
         WHEN NOT MATCHED THEN
           INSERT ROW
     """
 
     print(f"🔁 Merging shifts_{table_suffix} into final_shifts...")
-    client.query(merge_sql).result()
-    print(f"✅ Done with {table_suffix}")
+    try:
+        client.query(merge_sql).result()
+        print(f"✅ Done with {table_suffix}")
+    except Exception as e:
+        print(f"❌ Error merging {table_suffix}: {e}")
+        # Decide if you want to stop or continue on error
+        raise
 
-# 🔁 Run loop from May 1 to May 30
+# 🔁 Run loop
 current = start_date
 while current <= end_date:
     merge_shifts_for_date(current)
