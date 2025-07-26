@@ -1,9 +1,9 @@
-name: Loyverse Daily Sync
+name: Daily Loyverse Sync
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Runs every day at 00:00 UTC (8AM PH time)
-  workflow_dispatch:     # Allows manual trigger from GitHub UI
+    - cron: '0 0 * * *'  # Runs daily at 08:00 PH time
+  workflow_dispatch:     # Manual run option
 
 jobs:
   run-sync:
@@ -28,7 +28,8 @@ jobs:
         env:
           GCP_KEY_B64: ${{ secrets.GCP_KEY_B64 }}
 
-      - name: Run shift fix
+      - name: Run daily Loyverse pull
         env:
+          LOYVERSE_TOKEN: ${{ secrets.LOYVERSE_TOKEN }}
           GOOGLE_APPLICATION_CREDENTIALS: gcp_key.json
-        run: python fix_shifts_cash_movements.py
+        run: python daily_loyverse_pull.py
