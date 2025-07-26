@@ -32,4 +32,5 @@ jobs:
         env:
           LOYVERSE_TOKEN: ${{ secrets.LOYVERSE_TOKEN }}
           GOOGLE_APPLICATION_CREDENTIALS: gcp_key.json
-        run: python daily_loyverse_pull.py
+        run: |
+          python merge_daily_shifts_and_receipts.py
