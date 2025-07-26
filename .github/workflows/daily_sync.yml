@@ -33,4 +33,4 @@ jobs:
           LOYVERSE_TOKEN: ${{ secrets.LOYVERSE_TOKEN }}
           GOOGLE_APPLICATION_CREDENTIALS: gcp_key.json
         run: |
-          python daily_loyverse_pull.py
+          python Daily_Pull_Fix.py
