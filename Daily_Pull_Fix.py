@@ -165,4 +165,3 @@ while current_date <= BACKFILL_END_DATE:
     current_date += timedelta(days=1)
 
 print("\n\n🎉🎉🎉 Test Backfill Complete! 🎉🎉🎉")
-```
