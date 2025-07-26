@@ -5,8 +5,8 @@ project_id = "loyverse-anomaly-warehouse"
 dataset_id = "loyverse_data"
 client = bigquery.Client(project=project_id)
 
-start_date = datetime(2025, 1, 1)
-end_date = datetime(2025, 4, 30)
+start_date = datetime(2025, 6, 1)
+end_date = datetime(2025, 7, 24)
 
 def merge_shifts_for_date(date_obj):
     table_suffix = date_obj.strftime("%Y_%m_%d")
