@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from google.cloud import bigquery
 from google.cloud.exceptions import NotFound
+import json
 
 # 🔐 Loyverse API setup
 LOYVERSE_TOKEN = "53dbaaeae21541fb89080b0688fc0969"
@@ -16,8 +17,8 @@ dataset_id = "loyverse_data"
 client = bigquery.Client(project=project_id)
 
 # 📆 Define PH time range for previous full day
-today_ph = datetime.now()
-start_ph = (today_ph - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+today_ph = datetime.now() # This will be Saturday, July 26th in Cebu
+start_ph = (today_ph - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) # All of Friday, July 25th
 end_ph = start_ph.replace(hour=23, minute=59, second=59, microsecond=999999)
 
 # Convert to UTC for API calls
@@ -27,9 +28,7 @@ date_str = start_ph.strftime("%Y_%m_%d")
 
 # ==============================================================================
 # ✨ DEFINE STABLE SCHEMAS ✨
-# This is the most important change to guarantee stability.
 # ==============================================================================
-
 SCHEMA_RECEIPTS = [
     bigquery.SchemaField("receipt_number", "STRING"),
     bigquery.SchemaField("receipt_type", "STRING"),
@@ -41,10 +40,8 @@ SCHEMA_RECEIPTS = [
     bigquery.SchemaField("points_earned", "INTEGER"),
     bigquery.SchemaField("points_spent", "INTEGER"),
     bigquery.SchemaField("points_balance", "INTEGER"),
-    # Storing complex objects as JSON strings is the most flexible approach
     bigquery.SchemaField("line_items", "STRING", mode="REPEATED"),
     bigquery.SchemaField("payments", "STRING", mode="REPEATED"),
-    # Other potential fields, ensure they are nullable
     bigquery.SchemaField("note", "STRING"),
     bigquery.SchemaField("customer_id", "STRING"),
     bigquery.SchemaField("employee_id", "STRING"),
@@ -62,22 +59,16 @@ SCHEMA_SHIFTS = [
     bigquery.SchemaField("closing_time", "TIMESTAMP"),
     bigquery.SchemaField("expected_cash_amount", "FLOAT"),
     bigquery.SchemaField("actual_cash_amount", "FLOAT"),
-    # Storing complex objects as JSON strings
     bigquery.SchemaField("cash_movements", "STRING", mode="REPEATED"),
     bigquery.SchemaField("payments", "STRING", mode="REPEATED"),
     bigquery.SchemaField("taxes", "STRING", mode="REPEATED"),
 ]
 
-# Map entity names to their schemas
-SCHEMAS = {
-    "receipts": SCHEMA_RECEIPTS,
-    "shifts": SCHEMA_SHIFTS
-}
+SCHEMAS = {"receipts": SCHEMA_RECEIPTS, "shifts": SCHEMA_SHIFTS}
 
 def create_table_if_not_exists(table_id, schema):
-    """Creates a table with a defined schema if it doesn't exist."""
     try:
-        client.get_table(table_id) # Check if table exists
+        client.get_table(table_id)
         print(f"👍 Table {table_id} already exists.")
     except NotFound:
         print(f"🤔 Table {table_id} not found. Creating it...")
@@ -87,24 +78,26 @@ def create_table_if_not_exists(table_id, schema):
 
 
 def prepare_dataframe(df, schema):
-    """Prepares DataFrame for upload: handles types and ensures all columns exist."""
-    import json
-    
-    # Ensure all columns from the schema exist in the DataFrame, fill missing with None
+    """Prepares DataFrame to exactly match the target schema."""
+    # Get the list of column names from the schema definition
+    schema_columns = [field.name for field in schema]
+
+    # ** THE FIX IS HERE **
+    # Filter the DataFrame to include ONLY the columns defined in our schema.
+    # This ensures the daily table has the exact same structure as the final table.
+    df = df.reindex(columns=schema_columns)
+
+    # Convert array/object columns to JSON strings
     for field in schema:
-        if field.name not in df.columns:
-            df[field.name] = None
-        
-        # Convert array/object columns to JSON strings
         if field.field_type == 'STRING' and field.mode == 'REPEATED':
-             df[field.name] = df[field.name].apply(
+            df[field.name] = df[field.name].apply(
                 lambda x: [json.dumps(item) for item in x] if isinstance(x, list) else []
             )
 
     # Convert timestamp columns
     for field in schema:
-        if field.field_type == 'TIMESTAMP' and field.name in df.columns:
-            df[field.name] = pd.to_datetime(df[field.name], errors='coerce')
+        if field.field_type == 'TIMESTAMP':
+            df[field.name] = pd.to_datetime(df[field.name], errors='coerce', utc=True)
             
     return df
 
@@ -112,7 +105,6 @@ def prepare_dataframe(df, schema):
 def pull_and_upload(entity_name, url, key_name):
     """Pulls data from API and uploads to a daily BigQuery table."""
     print(f"\n📦 Pulling {entity_name} from {start_ph.strftime('%Y-%m-%d')}...")
-    # ... (Your existing API pull logic remains the same) ...
     data_collected = []
     params = {"created_at_min": utc_start, "created_at_max": utc_end, "limit": 250}
     while True:
@@ -134,12 +126,11 @@ def pull_and_upload(entity_name, url, key_name):
     df = pd.json_normalize(data_collected, sep="_")
     schema = SCHEMAS[entity_name]
     
-    # Prepare DataFrame using the schema
     df = prepare_dataframe(df, schema)
 
     table_id = f"{project_id}.{dataset_id}.{entity_name}_{date_str}"
     job_config = bigquery.LoadJobConfig(
-        schema=schema, # Use the explicit schema, not autodetect
+        schema=schema,
         write_disposition="WRITE_TRUNCATE",
     )
 
@@ -154,17 +145,17 @@ def merge_into_final(table_type):
     final_table_id = f"{project_id}.{dataset_id}.new_final_{table_type}"
     id_field = "receipt_number" if table_type == "receipts" else "id"
 
-    # 1. Create the final table if it doesn't exist
     create_table_if_not_exists(final_table_id, SCHEMAS[table_type])
     
-    # 2. Run the merge query
-    # The schemas now match perfectly, so INSERT ROW is safe
     merge_sql = f"""
         MERGE `{final_table_id}` AS target
         USING `{temp_table_id}` AS source
         ON target.{id_field} = source.{id_field}
         WHEN NOT MATCHED THEN
           INSERT ROW
+        WHEN MATCHED THEN
+          UPDATE SET
+            {', '.join([f'target.{f.name} = source.{f.name}' for f in SCHEMAS[table_type]])}
     """
 
     print(f"\n🔁 Merging {table_type}_{date_str} into new_final_{table_type}...")
@@ -174,7 +165,6 @@ def merge_into_final(table_type):
     except Exception as e:
         print(f"❌ Merge failed for {table_type}: {e}")
         raise
-
 
 # ==============================================================================
 # 🚀 MAIN EXECUTION
