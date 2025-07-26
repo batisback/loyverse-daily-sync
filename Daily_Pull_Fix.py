@@ -138,8 +138,8 @@ def merge_into_final(table_type, date_str):
 # ==============================================================================
 
 # --- Define the date range for the TEST backfill ---
-BACKFILL_START_DATE = datetime(2025, 6, 1)
-BACKFILL_END_DATE = datetime(2025, 6, 30)
+BACKFILL_START_DATE = datetime(2025, 5, 1)
+BACKFILL_END_DATE = datetime(2025, 5, 31)
 
 # --- Loop through each day in the range ---
 current_date = BACKFILL_START_DATE
