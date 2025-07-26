@@ -6,8 +6,8 @@ client = bigquery.Client()
 project_id = "loyverse-anomaly-warehouse"
 dataset_id = "loyverse_data"
 
-start_date = datetime.date(2025, 1, 1)
-end_date = datetime.date(2025, 4, 30)
+start_date = datetime.date(2025, 6, 1)
+end_date = datetime.date(2025, 7, 24)
 
 for i in range((end_date - start_date).days + 1):
     date_str = (start_date + datetime.timedelta(days=i)).strftime("shifts_%Y_%m_%d")
