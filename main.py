@@ -214,11 +214,15 @@ def generate_and_email_report():
     # Get email credentials from GitHub secrets
     sender_email = os.environ.get("SENDER_EMAIL")
     sender_password = os.environ.get("SENDER_PASSWORD")
-    recipient_email = os.environ.get("RECIPIENT_EMAIL")
+    recipient_email_str = os.environ.get("RECIPIENT_EMAIL") # Get the raw string
 
-    if not all([sender_email, sender_password, recipient_email]):
+    if not all([sender_email, sender_password, recipient_email_str]):
         print("🛑 Missing email configuration secrets. Cannot send report.")
         return
+
+    # --- FIX: Split the string of emails into a Python list ---
+    # This handles "email1@x.com, email2@y.com" and removes any extra spaces.
+    recipient_list = [email.strip() for email in recipient_email_str.split(',')]
 
     subject = f"Weekly Sales Anomaly Report - {pd.Timestamp.now(tz='Asia/Manila').strftime('%Y-%m-%d')}"
     
@@ -250,7 +254,8 @@ def generate_and_email_report():
     
     message = MIMEMultipart()
     message['From'] = sender_email
-    message['To'] = recipient_email
+    # Use join to create a display-friendly string for the 'To' header
+    message['To'] = ", ".join(recipient_list)
     message['Subject'] = subject
     message.attach(MIMEText(body_html, 'html'))
     
@@ -263,11 +268,8 @@ def generate_and_email_report():
     try:
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(sender_email, sender_password)
-            server.sendmail(sender_email, recipient_email, message.as_string())
-        print("✅ Email report sent successfully.")
+            # Pass the recipient_list to the sendmail function
+            server.sendmail(sender_email, recipient_list, message.as_string())
+        print(f"✅ Email report sent successfully to: {', '.join(recipient_list)}")
     except Exception as e:
         print(f"🔥 Failed to send email: {e}")
-
-# --- Script Entry Point ---
-if __name__ == "__main__":
-    generate_and_email_report()
