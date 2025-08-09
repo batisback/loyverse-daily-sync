@@ -20,11 +20,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      # Step 2: Set up Google Cloud authentication
+# Step 2: Set up Google Cloud authentication
       - name: Authenticate to Google Cloud
         uses: 'google-github-actions/auth@v2'
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          credentials_json: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
 
       # Step 3: Set up Python environment
       - name: Set up Python 3.11
