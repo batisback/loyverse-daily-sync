@@ -23,7 +23,7 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: 'google-github-actions/auth@v2'
         with:
-          credentials_json: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+          credentials_json: ${{ secrets.GCP_REPORTER_KEY }} 
 
       # Step 3: Sets up Python environment.
       - name: Set up Python 3.11
