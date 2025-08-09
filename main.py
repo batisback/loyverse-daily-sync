@@ -33,12 +33,11 @@ store_name_map = {
     'a254eb83-5e8b-4ff6-86f9-a26d47114288': 'JY SB'
 }
 
-# --- 2. DATA FETCHING & ANALYSIS FUNCTIONS ---
+# --- 2. ANALYSIS FUNCTIONS ---
 
 def get_processed_shift_data(client, store_map):
     """Fetches and processes the base shift data needed for multiple analyses."""
     print("📦 Pulling and processing base shift data...")
-    # This function is used by 3 of the 4 reports
     shift_sales_query = f"""
     WITH ShiftSales AS (
         SELECT s.id AS shift_number, s.opened_at, s.closed_at, s.store_id,
@@ -88,7 +87,7 @@ def generate_sales_dip_anomalies(all_shift_data):
     return anomalies
 
 def generate_ratio_anomalies(client, store_map):
-    """Original anomaly detection for Americano vs. Spanish Latte ratios."""
+    """Anomaly detection for Americano/Spanish Latte ratios AND Spanish Latte sales dips."""
     print("📊 Generating 'Ratio Anomalies' report...")
     query = f"""
     WITH ShiftsInRange AS (
@@ -124,50 +123,70 @@ def generate_ratio_anomalies(client, store_map):
     pivot_df['shift_slot'] = pivot_df['day_name'] + '-' + pivot_df['time_slot']
     analysis_df = pivot_df[pivot_df['time_slot'] != 'Other'].copy()
 
-    baselines = analysis_df.groupby(['store_name', 'shift_slot'])['Americano'].mean().reset_index()
-    baselines.rename(columns={'Americano': 'avg_americano_orders'}, inplace=True)
+    # --- UPDATED: Calculate baselines for BOTH Americano and Spanish Latte ---
+    baselines = analysis_df.groupby(['store_name', 'shift_slot'])[['Americano', 'Spanish Latte']].agg(['mean', 'std']).reset_index()
+    baselines.columns = ['_'.join(col).strip('_') for col in baselines.columns.values] # Flatten multi-index columns
+    baselines = baselines.rename(columns={
+        'Americano_mean': 'avg_americano', 'Spanish Latte_mean': 'avg_spanish_latte',
+        'Spanish Latte_std': 'std_spanish_latte'
+    })
+    baselines['std_spanish_latte'] = baselines['std_spanish_latte'].fillna(0)
+
     analysis_df = pd.merge(analysis_df, baselines, on=['store_name', 'shift_slot'], how='left')
-    analysis_df['avg_americano_orders'] = analysis_df['avg_americano_orders'].fillna(0)
     
     analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
     recent_shifts_df = analysis_df[analysis_df['shift_opening_time'] >= analysis_period_start].copy()
     
+    # --- Anomaly Condition 1: High Americano vs. Spanish Latte Ratio ---
     recent_shifts_df['americano_vs_spanish_latte_pct'] = np.where(recent_shifts_df['Spanish Latte'] > 0, (recent_shifts_df['Americano'] / recent_shifts_df['Spanish Latte']), np.nan)
     recent_shifts_df.loc[(recent_shifts_df['Spanish Latte'] == 0) & (recent_shifts_df['Americano'] > 0), 'americano_vs_spanish_latte_pct'] = 9.99
+    recent_shifts_df['is_ratio_anomaly'] = recent_shifts_df['americano_vs_spanish_latte_pct'] > 0.6
+
+    # --- Anomaly Condition 2: Low Spanish Latte Sales ---
+    recent_shifts_df['latte_anomaly_threshold'] = recent_shifts_df['avg_spanish_latte'] - (1.8 * recent_shifts_df['std_spanish_latte'])
+    recent_shifts_df['is_latte_dip_anomaly'] = (recent_shifts_df['Spanish Latte'] < recent_shifts_df['latte_anomaly_threshold']) & (recent_shifts_df['std_spanish_latte'] > 0)
     
-    anomalies = recent_shifts_df[recent_shifts_df['americano_vs_spanish_latte_pct'] > 0.6].copy()
+    # --- Combine conditions and assign a reason for the flag ---
+    anomalies = recent_shifts_df[recent_shifts_df['is_ratio_anomaly'] | recent_shifts_df['is_latte_dip_anomaly']].copy()
+    
+    def get_reason(row):
+        reasons = []
+        if row['is_ratio_anomaly']:
+            reasons.append("High Americano Ratio")
+        if row['is_latte_dip_anomaly']:
+            reasons.append("Low Spanish Latte Sales")
+        return ", ".join(reasons)
+        
+    if not anomalies.empty:
+        anomalies['Reason'] = anomalies.apply(get_reason, axis=1)
+
     anomalies.sort_values(by=['store_name', 'shift_opening_time'], inplace=True)
-    print(f"🚨 Found {len(anomalies)} suspicious ratio shifts.")
+    print(f"🚨 Found {len(anomalies)} suspicious ratio/dip shifts.")
     return anomalies
 
 def generate_summary_sales(all_shift_data):
-    """Page 1: Weekly summary of sales vs historic average."""
+    # ... (This function remains exactly the same) ...
     print("📊 Generating 'Summary Sales' report...")
     analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
     baseline_df = all_shift_data[all_shift_data['shift_opening_time'] < analysis_period_start]
     recent_df = all_shift_data[all_shift_data['shift_opening_time'] >= analysis_period_start]
-
     recent_sales = recent_df.groupby('store_name')['total_sales'].sum().reset_index()
     recent_sales.rename(columns={'total_sales': 'Sales Amount (Past 7 Days)'}, inplace=True)
-    
     historic_sales = baseline_df.groupby('store_name')['total_sales'].sum().reset_index()
     num_baseline_weeks = (BASELINE_DAYS - ANALYSIS_DAYS) / 7.0
     historic_sales['Sales Average per 7 Days'] = historic_sales['total_sales'] / num_baseline_weeks if num_baseline_weeks > 0 else 0
-    
     summary_df = pd.merge(recent_sales, historic_sales[['store_name', 'Sales Average per 7 Days']], on='store_name', how='left')
     summary_df.rename(columns={'store_name': 'Branch'}, inplace=True)
     return summary_df
 
 def generate_granular_sales(all_shift_data):
-    """Page 2: Granular shift sales vs historic average."""
+    # ... (This function remains exactly the same) ...
     print("📊 Generating 'Granular Sales' report...")
     analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
     baseline_df = all_shift_data[all_shift_data['shift_opening_time'] < analysis_period_start]
     recent_df = all_shift_data[all_shift_data['shift_opening_time'] >= analysis_period_start]
-
     historic_shift_avg = baseline_df.groupby(['store_name', 'shift_slot'])['total_sales'].mean().reset_index()
     historic_shift_avg.rename(columns={'total_sales': 'Average Historic Sales'}, inplace=True)
-    
     details_df = pd.merge(recent_df, historic_shift_avg, on=['store_name', 'shift_slot'], how='left')
     details_df = details_df[['store_name', 'shift_slot', 'total_sales', 'Average Historic Sales']].copy()
     details_df.rename(columns={'store_name': 'Branch Name', 'shift_slot': 'Shift', 'total_sales': 'Actual Sales'}, inplace=True)
@@ -187,14 +206,13 @@ def write_to_sheet(spreadsheet, sheet_name, df):
     try:
         worksheet = spreadsheet.worksheet(sheet_name)
     except gspread.exceptions.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows="1000", cols=len(df.columns) + 1)
+        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows="1000", cols=len(df.columns) + 2) # Added +2 for new columns
         
     worksheet.clear()
     set_with_dataframe(worksheet, df)
     print(f"✅ Successfully wrote data to '{sheet_name}' tab.")
 
 def main():
-    # --- Open or Create the Google Sheet ---
     try:
         sh = gc.open(SPREADSHEET_NAME)
         print(f"📖 Opened existing spreadsheet: '{SPREADSHEET_NAME}'")
