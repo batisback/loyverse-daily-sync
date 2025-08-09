@@ -123,9 +123,8 @@ def generate_ratio_anomalies(client, store_map):
     pivot_df['shift_slot'] = pivot_df['day_name'] + '-' + pivot_df['time_slot']
     analysis_df = pivot_df[pivot_df['time_slot'] != 'Other'].copy()
 
-    # --- UPDATED: Calculate baselines for BOTH Americano and Spanish Latte ---
     baselines = analysis_df.groupby(['store_name', 'shift_slot'])[['Americano', 'Spanish Latte']].agg(['mean', 'std']).reset_index()
-    baselines.columns = ['_'.join(col).strip('_') for col in baselines.columns.values] # Flatten multi-index columns
+    baselines.columns = ['_'.join(col).strip('_') for col in baselines.columns.values]
     baselines = baselines.rename(columns={
         'Americano_mean': 'avg_americano', 'Spanish Latte_mean': 'avg_spanish_latte',
         'Spanish Latte_std': 'std_spanish_latte'
@@ -137,24 +136,19 @@ def generate_ratio_anomalies(client, store_map):
     analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
     recent_shifts_df = analysis_df[analysis_df['shift_opening_time'] >= analysis_period_start].copy()
     
-    # --- Anomaly Condition 1: High Americano vs. Spanish Latte Ratio ---
     recent_shifts_df['americano_vs_spanish_latte_pct'] = np.where(recent_shifts_df['Spanish Latte'] > 0, (recent_shifts_df['Americano'] / recent_shifts_df['Spanish Latte']), np.nan)
     recent_shifts_df.loc[(recent_shifts_df['Spanish Latte'] == 0) & (recent_shifts_df['Americano'] > 0), 'americano_vs_spanish_latte_pct'] = 9.99
     recent_shifts_df['is_ratio_anomaly'] = recent_shifts_df['americano_vs_spanish_latte_pct'] > 0.6
 
-    # --- Anomaly Condition 2: Low Spanish Latte Sales ---
     recent_shifts_df['latte_anomaly_threshold'] = recent_shifts_df['avg_spanish_latte'] - (1.8 * recent_shifts_df['std_spanish_latte'])
     recent_shifts_df['is_latte_dip_anomaly'] = (recent_shifts_df['Spanish Latte'] < recent_shifts_df['latte_anomaly_threshold']) & (recent_shifts_df['std_spanish_latte'] > 0)
     
-    # --- Combine conditions and assign a reason for the flag ---
     anomalies = recent_shifts_df[recent_shifts_df['is_ratio_anomaly'] | recent_shifts_df['is_latte_dip_anomaly']].copy()
     
     def get_reason(row):
         reasons = []
-        if row['is_ratio_anomaly']:
-            reasons.append("High Americano Ratio")
-        if row['is_latte_dip_anomaly']:
-            reasons.append("Low Spanish Latte Sales")
+        if row['is_ratio_anomaly']: reasons.append("High Americano Ratio")
+        if row['is_latte_dip_anomaly']: reasons.append("Low Spanish Latte Sales")
         return ", ".join(reasons)
         
     if not anomalies.empty:
@@ -165,7 +159,7 @@ def generate_ratio_anomalies(client, store_map):
     return anomalies
 
 def generate_summary_sales(all_shift_data):
-    # ... (This function remains exactly the same) ...
+    """Page 1: Weekly summary of sales vs historic average."""
     print("📊 Generating 'Summary Sales' report...")
     analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
     baseline_df = all_shift_data[all_shift_data['shift_opening_time'] < analysis_period_start]
@@ -180,7 +174,7 @@ def generate_summary_sales(all_shift_data):
     return summary_df
 
 def generate_granular_sales(all_shift_data):
-    # ... (This function remains exactly the same) ...
+    """Page 2: Granular shift sales vs historic average."""
     print("📊 Generating 'Granular Sales' report...")
     analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
     baseline_df = all_shift_data[all_shift_data['shift_opening_time'] < analysis_period_start]
@@ -206,7 +200,7 @@ def write_to_sheet(spreadsheet, sheet_name, df):
     try:
         worksheet = spreadsheet.worksheet(sheet_name)
     except gspread.exceptions.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows="1000", cols=len(df.columns) + 2) # Added +2 for new columns
+        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows="1000", cols=len(df.columns) + 2)
         
     worksheet.clear()
     set_with_dataframe(worksheet, df)
