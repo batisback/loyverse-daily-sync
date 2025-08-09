@@ -15,10 +15,18 @@ SPREADSHEET_NAME = "loyverse AI Reports"
 # --- Authentication (Handles both BigQuery and Sheets) ---
 # In GitHub Actions, credentials are automatically found from the environment.
 print("🔑 Authenticating...")
-creds, _ = default()
+from google.auth import default
+
+# --- FIX: Define the necessary scopes for Drive and Sheets ---
+scopes = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive'
+]
+creds, _ = default(scopes=scopes)
 gc = gspread.authorize(creds)
 client = bigquery.Client(credentials=creds, project=PROJECT_ID)
-print("✅ Authentication successful.")
+print("✅ Authentication successful with Drive and Sheets permissions.")
+
 
 # Store name mapping
 store_name_map = {
