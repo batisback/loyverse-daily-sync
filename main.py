@@ -13,19 +13,20 @@ ANALYSIS_DAYS = 7
 SPREADSHEET_NAME = "loyverse AI Reports"
 
 # --- Authentication (Handles both BigQuery and Sheets) ---
-# In GitHub Actions, credentials are automatically found from the environment.
 print("🔑 Authenticating...")
 from google.auth import default
 
-# --- FIX: Define the necessary scopes for Drive and Sheets ---
+# --- FIX: Add the required scope for BigQuery ---
 scopes = [
     'https://www.googleapis.com/auth/spreadsheets',
-    'https://www.googleapis.com/auth/drive'
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/bigquery' # Add this scope for BigQuery
 ]
 creds, _ = default(scopes=scopes)
 gc = gspread.authorize(creds)
 client = bigquery.Client(credentials=creds, project=PROJECT_ID)
-print("✅ Authentication successful with Drive and Sheets permissions.")
+print("✅ Authentication successful with Drive, Sheets, and BigQuery permissions.")
+
 
 
 # Store name mapping
