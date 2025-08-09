@@ -1,7 +1,5 @@
 google-cloud-bigquery
 pandas
-matplotlib
-seaborn
 numpy
-db-dtypes
-jinja2
+gspread
+gspread-dataframe
