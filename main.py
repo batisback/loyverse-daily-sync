@@ -23,136 +23,150 @@ gc = gspread.authorize(creds)
 client = bigquery.Client(credentials=creds, project=PROJECT_ID)
 print("✅ Authentication successful.")
 
-TARGET_STORES = {
-    'CHH SB Co': '0c2650c7-6891-445f-bfb6-ad9a996512de', 'S4': '82034dd5-a404-43b4-9b2d-674e3bab0242',
-    'SB Co Ebloc3': '9d4f5c35-b777-4382-975f-33d72a1ac476', 'UC Med SB': 'b0baf2e5-2b71-41b6-a5f3-b280c43dc4e3',
-    'Sky1 SB': '1153f4fd-c8a7-495f-8a9f-2c6c8aa2cc6e', 'Alpha Simply': '20c5e48d-dc7c-4ad0-8f3f-f833338e5284',
-    'Alliance Simply': 'b9b66c09-dbfe-4ea4-9489-05b3320ddce2', 'Skyrise 3': 'f4bf31ef-12a8-4758-b941-8b8be11d7c23',
-    'JY SB': 'a254eb83-5e8b-4ff6-86f9-a26d47114288'
+store_name_map = {
+    '0c2650c7-6891-445f-bfb6-ad9a996512de': 'CHH SB Co', '82034dd5-a404-43b4-9b2d-674e3bab0242': 'S4',
+    '9d4f5c35-b777-4382-975f-33d72a1ac476': 'SB Co Ebloc3', 'a3291a95-e8e7-45c6-9d44-df81b36a1d37': 'Dtan',
+    'b0baf2e5-2b71-41b6-a5f3-b280c43dc4e3': 'UC Med SB', 'c9015f99-b75b-4ee9-ac52-d76eb16cab37': 'Sugbo Sentro',
+    '1153f4fd-c8a7-495f-8a9f-2c6c8aa2cc6e': 'Sky1 SB', '1a138ff9-d87f-4e82-951d-a0f89dec364d': 'Wipro',
+    '20c5e48d-dc7c-4ad0-8f3f-f833338e5284': 'Alpha Simply', 'b9b66c09-dbfe-4ea4-9489-05b3320ddce2': 'Alliance Simply',
+    '61928236-425a-40c8-9b21-38eafd0115f1': 'Trial Store 2', 'f4bf31ef-12a8-4758-b941-8b8be11d7c23': 'Skyrise 3',
+    'a254eb83-5e8b-4ff6-86f9-a26d47114288': 'JY SB'
 }
-target_store_ids = list(TARGET_STORES.values())
 
-# --- 2. DATA FETCHING AND PROCESSING ---
+# --- 2. ANALYSIS FUNCTIONS ---
 
-def fetch_and_process_data():
-    """Fetches and processes shift data for all target stores."""
-    print(f"📦 Pulling shift data for the last {BASELINE_DAYS} days...")
+def get_base_shift_data(client, store_map):
+    """Fetches and processes the base shift data needed for multiple analyses."""
+    print("📦 Pulling and processing base shift data...")
     shift_sales_query = f"""
     WITH ShiftSales AS (
-        SELECT s.store_id, s.opened_at,
+        SELECT s.id AS shift_number, s.opened_at, s.closed_at, s.store_id,
                COALESCE((SELECT SUM(CAST(JSON_EXTRACT_SCALAR(p, '$.money_amount') AS FLOAT64)) FROM UNNEST(s.payments) AS p), 0) AS total_sales
         FROM `{PROJECT_ID}.loyverse_data.new_final_shifts` AS s
-        WHERE s.store_id IN ({", ".join([f"'{id}'" for id in target_store_ids])})
-          AND s.opened_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {BASELINE_DAYS} DAY)
+        WHERE s.opened_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {BASELINE_DAYS} DAY)
     )
-    SELECT store_id, opened_at AS shift_opening_time, total_sales,
+    SELECT shift_number, opened_at AS shift_opening_time, closed_at AS shift_closing_time, store_id, total_sales,
            EXTRACT(DAYOFWEEK FROM opened_at AT TIME ZONE 'Asia/Manila') AS day_of_week,
            EXTRACT(HOUR FROM opened_at AT TIME ZONE 'Asia/Manila') AS hour_of_day
     FROM ShiftSales ORDER BY store_id, shift_opening_time
     """
-    all_shifts_df = client.query(shift_sales_query).to_dataframe()
-
-    if all_shifts_df.empty:
-        print("❌ No data found for any target stores.")
-        return None
-
-    print(f"✅ Found {len(all_shifts_df)} total shifts. Processing...")
-    all_shifts_df['shift_opening_time'] = pd.to_datetime(all_shifts_df['shift_opening_time']).dt.tz_convert('Asia/Manila')
-    id_to_name_map = {v: k for k, v in TARGET_STORES.items()}
-    all_shifts_df['store_name'] = all_shifts_df['store_id'].map(id_to_name_map)
+    shift_data = client.query(shift_sales_query).to_dataframe()
+    if shift_data.empty: return None
+    
+    shift_data['store_name'] = shift_data['store_id'].map(store_map).fillna('Unknown Store')
     day_map = {1: 'Sun', 2: 'Mon', 3: 'Tue', 4: 'Wed', 5: 'Thu', 6: 'Fri', 7: 'Sat'}
-    all_shifts_df['day_name'] = all_shifts_df['day_of_week'].map(day_map)
+    shift_data['day_name'] = shift_data['day_of_week'].map(day_map)
     def categorize_shift(hour):
         if 4 <= hour <= 11: return 'AM'
         elif 16 <= hour <= 23: return 'PM'
         else: return 'Other'
-    all_shifts_df['time_slot'] = all_shifts_df['hour_of_day'].apply(categorize_shift)
-    all_shifts_df['shift_slot'] = all_shifts_df['day_name'] + '-' + all_shifts_df['time_slot']
-    return all_shifts_df[all_shifts_df['time_slot'] != 'Other'].copy()
+    shift_data['time_slot'] = shift_data['hour_of_day'].apply(categorize_shift)
+    shift_data['shift_slot'] = shift_data['day_name'] + '-' + shift_data['time_slot']
+    shift_data['shift_opening_time'] = pd.to_datetime(shift_data['shift_opening_time']).dt.tz_convert('Asia/Manila')
+    return shift_data[shift_data['time_slot'] != 'Other'].copy()
+
+def generate_sales_dip_anomalies(all_shift_data):
+    """Original anomaly detection for sales dips."""
+    print("📊 Generating Sales Dip Anomaly report...")
+    baselines = all_shift_data.groupby(['store_name', 'shift_slot'])['total_sales'].agg(['mean', 'std']).reset_index()
+    baselines.rename(columns={'mean': 'avg_sales', 'std': 'std_sales'}, inplace=True)
+    baselines['std_sales'] = baselines['std_sales'].fillna(0)
+    analysis_df = pd.merge(all_shift_data, baselines, on=['store_name', 'shift_slot'], how='left')
+    
+    analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
+    recent_shifts_df = analysis_df[analysis_df['shift_opening_time'] >= analysis_period_start].copy()
+    
+    recent_shifts_df['anomaly_threshold'] = recent_shifts_df['avg_sales'] - (1.8 * recent_shifts_df['std_sales'])
+    recent_shifts_df['is_stat_anomaly'] = (recent_shifts_df['total_sales'] < recent_shifts_df['anomaly_threshold']) & (recent_shifts_df['std_sales'] > 0)
+    recent_shifts_df['is_hard_rule_anomaly'] = recent_shifts_df['total_sales'] < (recent_shifts_df['avg_sales'] * 0.6)
+    recent_shifts_df['is_suspicious'] = recent_shifts_df['is_stat_anomaly'] | recent_shifts_df['is_hard_rule_anomaly']
+    
+    anomalies = recent_shifts_df[recent_shifts_df['is_suspicious']].copy()
+    anomalies.sort_values(by=['store_name', 'shift_opening_time'], inplace=True)
+    print(f"🚨 Found {len(anomalies)} suspicious sales dip shifts.")
+    return anomalies
+
+def generate_summary_sales(all_shift_data):
+    """Page 1: Weekly summary of sales vs historic average."""
+    print("📊 Generating Page 1: Summary Sales...")
+    analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
+    baseline_df = all_shift_data[all_shift_data['shift_opening_time'] < analysis_period_start]
+    recent_df = all_shift_data[all_shift_data['shift_opening_time'] >= analysis_period_start]
+
+    recent_sales = recent_df.groupby('store_name')['total_sales'].sum().reset_index()
+    recent_sales.rename(columns={'total_sales': 'Sales Amount (Past 7 Days)'}, inplace=True)
+    
+    historic_sales = baseline_df.groupby('store_name')['total_sales'].sum().reset_index()
+    num_baseline_weeks = (BASELINE_DAYS - ANALYSIS_DAYS) / 7.0
+    historic_sales['Sales Average per 7 Days'] = historic_sales['total_sales'] / num_baseline_weeks if num_baseline_weeks > 0 else 0
+    
+    summary_df = pd.merge(recent_sales, historic_sales[['store_name', 'Sales Average per 7 Days']], on='store_name', how='left')
+    summary_df.rename(columns={'store_name': 'Branch'}, inplace=True)
+    return summary_df
+
+def generate_granular_sales(all_shift_data):
+    """Page 2: Granular shift sales vs historic average."""
+    print("📊 Generating Page 2: Granular Sales...")
+    analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
+    baseline_df = all_shift_data[all_shift_data['shift_opening_time'] < analysis_period_start]
+    recent_df = all_shift_data[all_shift_data['shift_opening_time'] >= analysis_period_start]
+
+    historic_shift_avg = baseline_df.groupby(['store_name', 'shift_slot'])['total_sales'].mean().reset_index()
+    historic_shift_avg.rename(columns={'total_sales': 'Average Historic Sales'}, inplace=True)
+    
+    details_df = pd.merge(recent_df, historic_shift_avg, on=['store_name', 'shift_slot'], how='left')
+    details_df = details_df[['store_name', 'shift_slot', 'total_sales', 'Average Historic Sales']].copy()
+    details_df.rename(columns={'store_name': 'Branch Name', 'shift_slot': 'Shift', 'total_sales': 'Actual Sales'}, inplace=True)
+    return details_df
 
 # --- 3. MAIN EXECUTION BLOCK ---
 
+def write_to_sheet(spreadsheet, sheet_name, df):
+    """Helper function to write a DataFrame to a specified worksheet."""
+    if df.empty:
+        print(f"⚠️ No data to write for '{sheet_name}'. Skipping.")
+        return
+        
+    # Prepare DataFrame for upload (convert datetimes to strings)
+    for col in df.select_dtypes(include=['datetimetz', 'datetime64[ns, Asia/Manila]']):
+        df[col] = df[col].dt.strftime('%Y-%m-%d %H:%M:%S')
+
+    try:
+        worksheet = spreadsheet.worksheet(sheet_name)
+    except gspread.exceptions.WorksheetNotFound:
+        worksheet = spreadsheet.add_worksheet(title=sheet_name, rows="1000", cols=len(df.columns) + 1)
+        
+    worksheet.clear()
+    set_with_dataframe(worksheet, df)
+    print(f"✅ Successfully wrote data to '{sheet_name}' tab.")
+
 def main():
-    all_data = fetch_and_process_data()
-    if all_data is None:
-        print("Halting execution as no data was found.")
+    base_data = get_base_shift_data(client, store_name_map)
+    if base_data is None:
+        print("Halting execution as no base data was found.")
         return
 
-    all_results = []
+    # --- Generate all reports ---
+    sales_dip_anomalies_df = generate_sales_dip_anomalies(base_data)
+    # The ratio analysis is separate and not requested, so it's commented out.
+    # ratio_anomalies_df = run_ratio_analysis(client, store_name_map)
+    summary_sales_df = generate_summary_sales(base_data)
+    granular_sales_df = generate_granular_sales(base_data)
 
-    for store_name in sorted(all_data['store_name'].unique()):
-        print(f"\nANALYZING STORE: {store_name.upper()}")
-        store_df = all_data[all_data['store_name'] == store_name].copy()
-        
-        analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
-        baseline_df = store_df[store_df['shift_opening_time'] < analysis_period_start]
-        recent_shifts_df = store_df[store_df['shift_opening_time'] >= analysis_period_start].copy()
-        
-        if recent_shifts_df.empty:
-            print(f"No recent shifts found for {store_name}. Skipping.")
-            continue
-
-        shift_baselines = baseline_df.groupby('shift_slot')['total_sales'].mean().reset_index()
-        shift_baselines.rename(columns={'total_sales': 'avg_historical_sales'}, inplace=True)
-
-        # --- Generate all 3 analyses for the store ---
-        # 1. Overall Performance
-        total_recent = recent_shifts_df['total_sales'].sum()
-        total_baseline = baseline_df['total_sales'].sum()
-        num_baseline_weeks = (BASELINE_DAYS - ANALYSIS_DAYS) / 7.0
-        avg_weekly_baseline = total_baseline / num_baseline_weeks if num_baseline_weeks > 0 else 0
-        
-        # 2. Granular Performance
-        performance_df = pd.merge(recent_shifts_df, shift_baselines, on='shift_slot', how='left').fillna(0)
-        performance_df['sales_difference'] = performance_df['total_sales'] - performance_df['avg_historical_sales']
-        performance_df['performance_pct'] = np.divide(performance_df['sales_difference'], performance_df['avg_historical_sales'], out=np.zeros_like(performance_df['sales_difference']), where=performance_df['avg_historical_sales']!=0) * 100
-        
-        # 3. Consecutive Dips
-        performance_df['is_dip'] = performance_df['sales_difference'] < 0
-        performance_df['dip_block'] = (performance_df['is_dip'] != performance_df['is_dip'].shift()).cumsum()
-        performance_df['consecutive_dip_count'] = performance_df.groupby('dip_block')['is_dip'].transform('size')
-        performance_df['alert_consecutive_dip'] = (performance_df['is_dip'] == True) & (performance_df['consecutive_dip_count'] >= 3)
-
-        # --- Format results for this store and add to the main list ---
-        overall_summary = f"Overall: {(total_recent - avg_weekly_baseline):+,.2f} ({((total_recent - avg_weekly_baseline)/avg_weekly_baseline)*100:+,.2f}%)"
-        
-        # Create a temporary row for the overall summary
-        summary_row = pd.DataFrame([{'store_name': store_name, 'shift_slot': overall_summary}])
-        all_results.append(summary_row)
-        
-        # Add granular results
-        granular_results = performance_df[['store_name', 'shift_opening_time', 'shift_slot', 'sales_difference', 'performance_pct', 'alert_consecutive_dip']]
-        all_results.append(granular_results)
-
-    if not all_results:
-        print("No results generated.")
-        return
-
-    # Combine all results into one big DataFrame
-    final_df = pd.concat(all_results, ignore_index=True)
-
-    # --- Write to Google Sheets ---
-    print("\nWriting all results to Google Sheets...")
+    # --- Write all reports to Google Sheets ---
+    print("\n📝 Writing all results to Google Sheets...")
     try:
         sh = gc.open(SPREADSHEET_NAME)
-        print(f"📖 Opened existing spreadsheet: '{SPREADSHEET_NAME}'")
     except gspread.exceptions.SpreadsheetNotFound:
         sh = gc.create(SPREADSHEET_NAME)
-        print(f"✨ Created new spreadsheet: '{SPREADSHEET_NAME}'")
         sa_email = creds.service_account_email
         sh.share(sa_email, perm_type='user', role='writer')
-        print(f"📧 Shared sheet with Service Account: {sa_email}")
 
-    try:
-        worksheet = sh.worksheet("Performance Report")
-    except gspread.exceptions.WorksheetNotFound:
-        worksheet = sh.add_worksheet(title="Performance Report", rows="2000", cols="30")
-        
-    # Prepare DataFrame for upload
-    final_df['shift_opening_time'] = pd.to_datetime(final_df['shift_opening_time']).dt.strftime('%Y-%m-%d %H:%M')
-    worksheet.clear()
-    set_with_dataframe(worksheet, final_df, include_index=False, allow_formulas=False)
-    print("✅ Successfully wrote all performance data to the 'Performance Report' tab.")
+    # Write each DataFrame to a different tab
+    write_to_sheet(sh, "Sales Dip Anomalies", sales_dip_anomalies_df)
+    write_to_sheet(sh, "Summary Sales", summary_sales_df)
+    write_to_sheet(sh, "Granular Sales", granular_sales_df)
+
     print(f"\n🎉 All tasks complete. View your report at: https://docs.google.com/spreadsheets/d/{sh.id}")
 
 if __name__ == "__main__":
