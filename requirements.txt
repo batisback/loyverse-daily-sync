@@ -3,3 +3,4 @@ pandas
 numpy
 gspread
 gspread-dataframe
+db-dtypes
