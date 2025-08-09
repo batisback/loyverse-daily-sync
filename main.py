@@ -23,123 +23,26 @@ gc = gspread.authorize(creds)
 client = bigquery.Client(credentials=creds, project=PROJECT_ID)
 print("✅ Authentication successful.")
 
-store_name_map = {
-    '0c2650c7-6891-445f-bfb6-ad9a996512de': 'CHH SB Co', '82034dd5-a404-43b4-9b2d-674e3bab0242': 'S4',
-    '9d4f5c35-b777-4382-975f-33d72a1ac476': 'SB Co Ebloc3', 'a3291a95-e8e7-45c6-9d44-df81b36a1d37': 'Dtan',
-    'b0baf2e5-2b71-41b6-a5f3-b280c43dc4e3': 'UC Med SB', 'c9015f99-b75b-4ee9-ac52-d76eb16cab37': 'Sugbo Sentro',
-    '1153f4fd-c8a7-495f-8a9f-2c6c8aa2cc6e': 'Sky1 SB', '1a138ff9-d87f-4e82-951d-a0f89dec364d': 'Wipro',
-    '20c5e48d-dc7c-4ad0-8f3f-f833338e5284': 'Alpha Simply', 'b9b66c09-dbfe-4ea4-9489-05b3320ddce2': 'Alliance Simply',
-    '61928236-425a-40c8-9b21-38eafd0115f1': 'Trial Store 2', 'f4bf31ef-12a8-4758-b941-8b8be11d7c23': 'Skyrise 3',
-    'a254eb83-5e8b-4ff6-86f9-a26d47114288': 'JY SB'
+TARGET_STORES = {
+    'CHH SB Co': '0c2650c7-6891-445f-bfb6-ad9a996512de', 'S4': '82034dd5-a404-43b4-9b2d-674e3bab0242',
+    'SB Co Ebloc3': '9d4f5c35-b777-4382-975f-33d72a1ac476', 'UC Med SB': 'b0baf2e5-2b71-41b6-a5f3-b280c43dc4e3',
+    'Sky1 SB': '1153f4fd-c8a7-495f-8a9f-2c6c8aa2cc6e', 'Alpha Simply': '20c5e48d-dc7c-4ad0-8f3f-f833338e5284',
+    'Alliance Simply': 'b9b66c09-dbfe-4ea4-9489-05b3320ddce2', 'Skyrise 3': 'f4bf31ef-12a8-4758-b941-8b8be11d7c23',
+    'JY SB': 'a254eb83-5e8b-4ff6-86f9-a26d47114288'
 }
+target_store_ids = list(TARGET_STORES.values())
 
-# --- 2. ANALYSIS FUNCTIONS ---
+# --- 2. DATA FETCHING AND PROCESSING ---
 
-def run_sales_dip_analysis(client, store_name_map):
-    # ... (This function remains exactly the same) ...
-    print("📊 Running Sales Dip analysis...")
-    shift_sales_query = f"""
-    WITH ShiftSales AS (
-        SELECT s.id AS shift_number, s.opened_at, s.closed_at, s.store_id,
-               COALESCE((SELECT SUM(CAST(JSON_EXTRACT_SCALAR(p, '$.money_amount') AS FLOAT64)) FROM UNNEST(s.payments) AS p), 0) AS total_sales
-        FROM `{PROJECT_ID}.loyverse_data.new_final_shifts` AS s
-        WHERE s.opened_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {BASELINE_DAYS} DAY)
-    )
-    SELECT shift_number, opened_at AS shift_opening_time, closed_at AS shift_closing_time, store_id, total_sales,
-           EXTRACT(DAYOFWEEK FROM opened_at AT TIME ZONE 'Asia/Manila') AS day_of_week,
-           EXTRACT(HOUR FROM opened_at AT TIME ZONE 'Asia/Manila') AS hour_of_day
-    FROM ShiftSales ORDER BY store_id, shift_opening_time
-    """
-    shift_data = client.query(shift_sales_query).to_dataframe()
-    if shift_data.empty: return pd.DataFrame()
-    shift_data['store_name'] = shift_data['store_id'].map(store_name_map).fillna('Unknown Store')
-    day_map = {1: 'Sun', 2: 'Mon', 3: 'Tue', 4: 'Wed', 5: 'Thu', 6: 'Fri', 7: 'Sat'}
-    shift_data['day_name'] = shift_data['day_of_week'].map(day_map)
-    def categorize_shift(hour):
-        if 4 <= hour <= 11: return 'AM'
-        elif 16 <= hour <= 23: return 'PM'
-        else: return 'Other'
-    shift_data['time_slot'] = shift_data['hour_of_day'].apply(categorize_shift)
-    shift_data['shift_slot'] = shift_data['day_name'] + '-' + shift_data['time_slot']
-    analysis_data = shift_data[shift_data['time_slot'] != 'Other'].copy()
-    baselines = analysis_data.groupby(['store_name', 'shift_slot'])['total_sales'].agg(['mean', 'std']).reset_index()
-    baselines.rename(columns={'mean': 'avg_sales', 'std': 'std_sales'}, inplace=True)
-    baselines['std_sales'] = baselines['std_sales'].fillna(0)
-    analysis_df = pd.merge(analysis_data, baselines, on=['store_name', 'shift_slot'], how='left')
-    analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
-    analysis_df['shift_opening_time'] = pd.to_datetime(analysis_df['shift_opening_time'])
-    recent_shifts_df = analysis_df[analysis_df['shift_opening_time'] >= analysis_period_start].copy()
-    recent_shifts_df['anomaly_threshold'] = recent_shifts_df['avg_sales'] - (1.8 * recent_shifts_df['std_sales'])
-    recent_shifts_df['is_stat_anomaly'] = (recent_shifts_df['total_sales'] < recent_shifts_df['anomaly_threshold']) & (recent_shifts_df['std_sales'] > 0)
-    recent_shifts_df['is_hard_rule_anomaly'] = recent_shifts_df['total_sales'] < (recent_shifts_df['avg_sales'] * 0.6)
-    recent_shifts_df['is_suspicious'] = recent_shifts_df['is_stat_anomaly'] | recent_shifts_df['is_hard_rule_anomaly']
-    anomalies = recent_shifts_df[recent_shifts_df['is_suspicious']].copy()
-    anomalies.sort_values(by=['store_name', 'shift_opening_time'], inplace=True)
-    print(f"🚨 Found {len(anomalies)} suspicious sales dip shifts.")
-    return anomalies
-
-
-def run_ratio_analysis(client, store_name_map):
-    # ... (This function remains exactly the same) ...
-    print("📊 Running Americano vs. Spanish Latte ratio analysis...")
-    query = f"""
-    WITH ShiftsInRange AS (
-        SELECT id, store_id, opened_at, closed_at FROM `{PROJECT_ID}.loyverse_data.new_final_shifts`
-        WHERE opened_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {BASELINE_DAYS} DAY)
-          AND (EXTRACT(HOUR FROM opened_at AT TIME ZONE 'Asia/Manila') BETWEEN 4 AND 11 OR EXTRACT(HOUR FROM opened_at AT TIME ZONE 'Asia/Manila') BETWEEN 16 AND 23)
-    ),
-    ReceiptItemsInRange AS (
-        SELECT created_at, store_id, JSON_EXTRACT_SCALAR(item, '$.item_name') AS name, CAST(JSON_EXTRACT_SCALAR(item, '$.quantity') AS FLOAT64) AS quantity
-        FROM `{PROJECT_ID}.loyverse_data.new_final_receipts` AS r, UNNEST(r.line_items) AS item
-        WHERE created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {BASELINE_DAYS} DAY)
-          AND JSON_EXTRACT_SCALAR(item, '$.item_name') IN ("Americano", "Spanish Latte")
-    )
-    SELECT s.id AS shift_number, s.opened_at AS shift_opening_time, s.store_id, ri.name, ri.quantity
-    FROM ReceiptItemsInRange AS ri JOIN ShiftsInRange AS s ON ri.store_id = s.store_id
-    AND ri.created_at BETWEEN s.opened_at AND IFNULL(s.closed_at, CURRENT_TIMESTAMP())
-    """
-    data = client.query(query).to_dataframe()
-    if data.empty: return pd.DataFrame()
-    pivot_df = data.groupby(["shift_number", "shift_opening_time", "store_id", "name"])["quantity"].sum().unstack(fill_value=0).reset_index()
-    if 'Americano' not in pivot_df.columns: pivot_df['Americano'] = 0
-    if 'Spanish Latte' not in pivot_df.columns: pivot_df['Spanish Latte'] = 0
-    pivot_df['store_name'] = pivot_df['store_id'].map(store_name_map).fillna('Unknown Store')
-    pivot_df['shift_opening_time'] = pd.to_datetime(pivot_df['shift_opening_time']).dt.tz_convert('Asia/Manila')
-    day_map = {0: 'Mon', 1: 'Tue', 2: 'Wed', 3: 'Thu', 4: 'Fri', 5: 'Sat', 6: 'Sun'}
-    pivot_df['day_name'] = pivot_df['shift_opening_time'].dt.dayofweek.map(day_map)
-    def categorize_shift(hour):
-        if 4 <= hour <= 11: return 'AM'
-        elif 16 <= hour <= 23: return 'PM'
-        else: return 'Other'
-    pivot_df['time_slot'] = pivot_df['shift_opening_time'].dt.hour.apply(categorize_shift)
-    pivot_df['shift_slot'] = pivot_df['day_name'] + '-' + pivot_df['time_slot']
-    analysis_df = pivot_df[pivot_df['time_slot'] != 'Other'].copy()
-    baselines = analysis_df.groupby(['store_name', 'shift_slot'])['Americano'].mean().reset_index()
-    baselines.rename(columns={'Americano': 'avg_americano_orders'}, inplace=True)
-    analysis_df = pd.merge(analysis_df, baselines, on=['store_name', 'shift_slot'], how='left')
-    analysis_df['avg_americano_orders'] = analysis_df['avg_americano_orders'].fillna(0)
-    analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
-    recent_shifts_df = analysis_df[analysis_df['shift_opening_time'] >= analysis_period_start].copy()
-    recent_shifts_df['americano_vs_spanish_latte_pct'] = np.where(recent_shifts_df['Spanish Latte'] > 0, (recent_shifts_df['Americano'] / recent_shifts_df['Spanish Latte']), np.nan)
-    recent_shifts_df.loc[(recent_shifts_df['Spanish Latte'] == 0) & (recent_shifts_df['Americano'] > 0), 'americano_vs_spanish_latte_pct'] = 9.99
-    anomalies = recent_shifts_df[recent_shifts_df['americano_vs_spanish_latte_pct'] > 0.6].copy()
-    anomalies.sort_values(by=['store_name', 'shift_opening_time'], inplace=True)
-    print(f"🚨 Found {len(anomalies)} suspicious ratio shifts.")
-    return anomalies
-
-# --- NEW: Function for Consecutive Sales Dip Analysis ---
-def run_consecutive_dip_analysis(client, store_name_map):
-    """Analyzes for 3 or more consecutive shifts with below-average sales."""
-    print("📊 Running Consecutive Sales Dip analysis...")
-    
-    # This analysis builds on the same data as the sales dip analysis,
-    # so we can reuse much of the query and initial processing.
+def fetch_and_process_data():
+    """Fetches and processes shift data for all target stores."""
+    print(f"📦 Pulling shift data for the last {BASELINE_DAYS} days...")
     shift_sales_query = f"""
     WITH ShiftSales AS (
         SELECT s.store_id, s.opened_at,
                COALESCE((SELECT SUM(CAST(JSON_EXTRACT_SCALAR(p, '$.money_amount') AS FLOAT64)) FROM UNNEST(s.payments) AS p), 0) AS total_sales
         FROM `{PROJECT_ID}.loyverse_data.new_final_shifts` AS s
-        WHERE s.store_id IN ({", ".join([f"'{id}'" for id in store_name_map.values()])})
+        WHERE s.store_id IN ({", ".join([f"'{id}'" for id in target_store_ids])})
           AND s.opened_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {BASELINE_DAYS} DAY)
     )
     SELECT store_id, opened_at AS shift_opening_time, total_sales,
@@ -148,10 +51,15 @@ def run_consecutive_dip_analysis(client, store_name_map):
     FROM ShiftSales ORDER BY store_id, shift_opening_time
     """
     all_shifts_df = client.query(shift_sales_query).to_dataframe()
-    if all_shifts_df.empty: return pd.DataFrame()
 
+    if all_shifts_df.empty:
+        print("❌ No data found for any target stores.")
+        return None
+
+    print(f"✅ Found {len(all_shifts_df)} total shifts. Processing...")
     all_shifts_df['shift_opening_time'] = pd.to_datetime(all_shifts_df['shift_opening_time']).dt.tz_convert('Asia/Manila')
-    all_shifts_df['store_name'] = all_shifts_df['store_id'].map({v: k for k, v in store_name_map.items()})
+    id_to_name_map = {v: k for k, v in TARGET_STORES.items()}
+    all_shifts_df['store_name'] = all_shifts_df['store_id'].map(id_to_name_map)
     day_map = {1: 'Sun', 2: 'Mon', 3: 'Tue', 4: 'Wed', 5: 'Thu', 6: 'Fri', 7: 'Sat'}
     all_shifts_df['day_name'] = all_shifts_df['day_of_week'].map(day_map)
     def categorize_shift(hour):
@@ -160,48 +68,71 @@ def run_consecutive_dip_analysis(client, store_name_map):
         else: return 'Other'
     all_shifts_df['time_slot'] = all_shifts_df['hour_of_day'].apply(categorize_shift)
     all_shifts_df['shift_slot'] = all_shifts_df['day_name'] + '-' + all_shifts_df['time_slot']
-    analysis_df_all_stores = all_shifts_df[all_shifts_df['time_slot'] != 'Other'].copy()
-
-    all_consecutive_dips = []
-
-    for store_name in sorted(analysis_df_all_stores['store_name'].unique()):
-        store_df = analysis_df_all_stores[analysis_df_all_stores['store_name'] == store_name].copy()
-        analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
-        baseline_df = store_df[store_df['shift_opening_time'] < analysis_period_start]
-        recent_shifts_df = store_df[store_df['shift_opening_time'] >= analysis_period_start].copy()
-        
-        if recent_shifts_df.empty: continue
-
-        shift_baselines = baseline_df.groupby('shift_slot')['total_sales'].mean().reset_index()
-        shift_baselines.rename(columns={'total_sales': 'avg_historical_sales'}, inplace=True)
-        
-        performance_df = pd.merge(recent_shifts_df, shift_baselines, on='shift_slot', how='left')
-        performance_df['avg_historical_sales'] = performance_df['avg_historical_sales'].fillna(0)
-        
-        performance_df['is_dip'] = performance_df['total_sales'] < performance_df['avg_historical_sales']
-        performance_df['dip_block'] = (performance_df['is_dip'] != performance_df['is_dip'].shift()).cumsum()
-        performance_df['consecutive_dip_count'] = performance_df.groupby('dip_block')['is_dip'].transform('size')
-        
-        consecutive_dips_df = performance_df[
-            (performance_df['is_dip'] == True) & 
-            (performance_df['consecutive_dip_count'] >= 3)
-        ].copy()
-        
-        if not consecutive_dips_df.empty:
-            all_consecutive_dips.append(consecutive_dips_df)
-
-    if not all_consecutive_dips:
-        print("✅ No consecutive dip alerts found.")
-        return pd.DataFrame()
-    
-    final_dips_df = pd.concat(all_consecutive_dips)
-    print(f"🚨 Found {len(final_dips_df)} shifts that are part of a consecutive dip.")
-    return final_dips_df
-
+    return all_shifts_df[all_shifts_df['time_slot'] != 'Other'].copy()
 
 # --- 3. MAIN EXECUTION BLOCK ---
 
 def main():
+    all_data = fetch_and_process_data()
+    if all_data is None:
+        print("Halting execution as no data was found.")
+        return
+
+    all_results = []
+
+    for store_name in sorted(all_data['store_name'].unique()):
+        print(f"\nANALYZING STORE: {store_name.upper()}")
+        store_df = all_data[all_data['store_name'] == store_name].copy()
+        
+        analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
+        baseline_df = store_df[store_df['shift_opening_time'] < analysis_period_start]
+        recent_shifts_df = store_df[store_df['shift_opening_time'] >= analysis_period_start].copy()
+        
+        if recent_shifts_df.empty:
+            print(f"No recent shifts found for {store_name}. Skipping.")
+            continue
+
+        shift_baselines = baseline_df.groupby('shift_slot')['total_sales'].mean().reset_index()
+        shift_baselines.rename(columns={'total_sales': 'avg_historical_sales'}, inplace=True)
+
+        # --- Generate all 3 analyses for the store ---
+        # 1. Overall Performance
+        total_recent = recent_shifts_df['total_sales'].sum()
+        total_baseline = baseline_df['total_sales'].sum()
+        num_baseline_weeks = (BASELINE_DAYS - ANALYSIS_DAYS) / 7.0
+        avg_weekly_baseline = total_baseline / num_baseline_weeks if num_baseline_weeks > 0 else 0
+        
+        # 2. Granular Performance
+        performance_df = pd.merge(recent_shifts_df, shift_baselines, on='shift_slot', how='left').fillna(0)
+        performance_df['sales_difference'] = performance_df['total_sales'] - performance_df['avg_historical_sales']
+        performance_df['performance_pct'] = np.divide(performance_df['sales_difference'], performance_df['avg_historical_sales'], out=np.zeros_like(performance_df['sales_difference']), where=performance_df['avg_historical_sales']!=0) * 100
+        
+        # 3. Consecutive Dips
+        performance_df['is_dip'] = performance_df['sales_difference'] < 0
+        performance_df['dip_block'] = (performance_df['is_dip'] != performance_df['is_dip'].shift()).cumsum()
+        performance_df['consecutive_dip_count'] = performance_df.groupby('dip_block')['is_dip'].transform('size')
+        performance_df['alert_consecutive_dip'] = (performance_df['is_dip'] == True) & (performance_df['consecutive_dip_count'] >= 3)
+
+        # --- Format results for this store and add to the main list ---
+        overall_summary = f"Overall: {(total_recent - avg_weekly_baseline):+,.2f} ({((total_recent - avg_weekly_baseline)/avg_weekly_baseline)*100:+,.2f}%)"
+        
+        # Create a temporary row for the overall summary
+        summary_row = pd.DataFrame([{'store_name': store_name, 'shift_slot': overall_summary}])
+        all_results.append(summary_row)
+        
+        # Add granular results
+        granular_results = performance_df[['store_name', 'shift_opening_time', 'shift_slot', 'sales_difference', 'performance_pct', 'alert_consecutive_dip']]
+        all_results.append(granular_results)
+
+    if not all_results:
+        print("No results generated.")
+        return
+
+    # Combine all results into one big DataFrame
+    final_df = pd.concat(all_results, ignore_index=True)
+
+    # --- Write to Google Sheets ---
+    print("\nWriting all results to Google Sheets...")
     try:
         sh = gc.open(SPREADSHEET_NAME)
         print(f"📖 Opened existing spreadsheet: '{SPREADSHEET_NAME}'")
@@ -212,39 +143,16 @@ def main():
         sh.share(sa_email, perm_type='user', role='writer')
         print(f"📧 Shared sheet with Service Account: {sa_email}")
 
-    # Process and Upload Sales Dip Anomalies
-    sales_dip_df = run_sales_dip_analysis(client, store_name_map)
-    if not sales_dip_df.empty:
-        for col in sales_dip_df.select_dtypes(include=['datetimetz']): sales_dip_df[col] = sales_dip_df[col].dt.strftime('%Y-%m-%d %H:%M:%S')
-        try:
-            worksheet = sh.worksheet("Sales Dip Anomalies")
-        except gspread.exceptions.WorksheetNotFound:
-            worksheet = sh.add_worksheet(title="Sales Dip Anomalies", rows="1000", cols="30")
-        worksheet.clear(); set_with_dataframe(worksheet, sales_dip_df)
-        print("✅ Wrote sales dip data to the sheet.")
-    
-    # Process and Upload Ratio Anomalies
-    ratio_df = run_ratio_analysis(client, store_name_map)
-    if not ratio_df.empty:
-        for col in ratio_df.select_dtypes(include=['datetimetz']): ratio_df[col] = ratio_df[col].dt.strftime('%Y-%m-%d %H:%M:%S')
-        try:
-            worksheet = sh.worksheet("Ratio Anomalies")
-        except gspread.exceptions.WorksheetNotFound:
-            worksheet = sh.add_worksheet(title="Ratio Anomalies", rows="1000", cols="30")
-        worksheet.clear(); set_with_dataframe(worksheet, ratio_df)
-        print("✅ Wrote ratio data to the sheet.")
-
-    # --- NEW: Process and Upload Consecutive Dip Alerts ---
-    consecutive_dips_df = run_consecutive_dip_analysis(client, store_name_map)
-    if not consecutive_dips_df.empty:
-        for col in consecutive_dips_df.select_dtypes(include=['datetimetz']): consecutive_dips_df[col] = consecutive_dips_df[col].dt.strftime('%Y-%m-%d %H:%M:%S')
-        try:
-            worksheet = sh.worksheet("Consecutive Dip Alerts")
-        except gspread.exceptions.WorksheetNotFound:
-            worksheet = sh.add_worksheet(title="Consecutive Dip Alerts", rows="1000", cols="30")
-        worksheet.clear(); set_with_dataframe(worksheet, consecutive_dips_df)
-        print("✅ Wrote consecutive dip data to the sheet.")
-
+    try:
+        worksheet = sh.worksheet("Performance Report")
+    except gspread.exceptions.WorksheetNotFound:
+        worksheet = sh.add_worksheet(title="Performance Report", rows="2000", cols="30")
+        
+    # Prepare DataFrame for upload
+    final_df['shift_opening_time'] = pd.to_datetime(final_df['shift_opening_time']).dt.strftime('%Y-%m-%d %H:%M')
+    worksheet.clear()
+    set_with_dataframe(worksheet, final_df, include_index=False, allow_formulas=False)
+    print("✅ Successfully wrote all performance data to the 'Performance Report' tab.")
     print(f"\n🎉 All tasks complete. View your report at: https://docs.google.com/spreadsheets/d/{sh.id}")
 
 if __name__ == "__main__":
