@@ -33,11 +33,12 @@ store_name_map = {
     'a254eb83-5e8b-4ff6-86f9-a26d47114288': 'JY SB'
 }
 
-# --- 2. ANALYSIS FUNCTIONS ---
+# --- 2. DATA FETCHING & ANALYSIS FUNCTIONS ---
 
-def get_base_shift_data(client, store_map):
+def get_processed_shift_data(client, store_map):
     """Fetches and processes the base shift data needed for multiple analyses."""
     print("📦 Pulling and processing base shift data...")
+    # This function is used by 3 of the 4 reports
     shift_sales_query = f"""
     WITH ShiftSales AS (
         SELECT s.id AS shift_number, s.opened_at, s.closed_at, s.store_id,
@@ -67,7 +68,7 @@ def get_base_shift_data(client, store_map):
 
 def generate_sales_dip_anomalies(all_shift_data):
     """Original anomaly detection for sales dips."""
-    print("📊 Generating Sales Dip Anomaly report...")
+    print("📊 Generating 'Sales Dip Anomalies' report...")
     baselines = all_shift_data.groupby(['store_name', 'shift_slot'])['total_sales'].agg(['mean', 'std']).reset_index()
     baselines.rename(columns={'mean': 'avg_sales', 'std': 'std_sales'}, inplace=True)
     baselines['std_sales'] = baselines['std_sales'].fillna(0)
@@ -86,9 +87,62 @@ def generate_sales_dip_anomalies(all_shift_data):
     print(f"🚨 Found {len(anomalies)} suspicious sales dip shifts.")
     return anomalies
 
+def generate_ratio_anomalies(client, store_map):
+    """Original anomaly detection for Americano vs. Spanish Latte ratios."""
+    print("📊 Generating 'Ratio Anomalies' report...")
+    query = f"""
+    WITH ShiftsInRange AS (
+        SELECT id, store_id, opened_at, closed_at FROM `{PROJECT_ID}.loyverse_data.new_final_shifts`
+        WHERE opened_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {BASELINE_DAYS} DAY)
+          AND (EXTRACT(HOUR FROM opened_at AT TIME ZONE 'Asia/Manila') BETWEEN 4 AND 11 OR EXTRACT(HOUR FROM opened_at AT TIME ZONE 'Asia/Manila') BETWEEN 16 AND 23)
+    ),
+    ReceiptItemsInRange AS (
+        SELECT created_at, store_id, JSON_EXTRACT_SCALAR(item, '$.item_name') AS name, CAST(JSON_EXTRACT_SCALAR(item, '$.quantity') AS FLOAT64) AS quantity
+        FROM `{PROJECT_ID}.loyverse_data.new_final_receipts` AS r, UNNEST(r.line_items) AS item
+        WHERE created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {BASELINE_DAYS} DAY)
+          AND JSON_EXTRACT_SCALAR(item, '$.item_name') IN ("Americano", "Spanish Latte")
+    )
+    SELECT s.id AS shift_number, s.opened_at AS shift_opening_time, s.store_id, ri.name, ri.quantity
+    FROM ReceiptItemsInRange AS ri JOIN ShiftsInRange AS s ON ri.store_id = s.store_id
+    AND ri.created_at BETWEEN s.opened_at AND IFNULL(s.closed_at, CURRENT_TIMESTAMP())
+    """
+    data = client.query(query).to_dataframe()
+    if data.empty: return pd.DataFrame()
+    
+    pivot_df = data.groupby(["shift_number", "shift_opening_time", "store_id", "name"])["quantity"].sum().unstack(fill_value=0).reset_index()
+    if 'Americano' not in pivot_df.columns: pivot_df['Americano'] = 0
+    if 'Spanish Latte' not in pivot_df.columns: pivot_df['Spanish Latte'] = 0
+    pivot_df['store_name'] = pivot_df['store_id'].map(store_map).fillna('Unknown Store')
+    pivot_df['shift_opening_time'] = pd.to_datetime(pivot_df['shift_opening_time']).dt.tz_convert('Asia/Manila')
+    day_map = {0: 'Mon', 1: 'Tue', 2: 'Wed', 3: 'Thu', 4: 'Fri', 5: 'Sat', 6: 'Sun'}
+    pivot_df['day_name'] = pivot_df['shift_opening_time'].dt.dayofweek.map(day_map)
+    def categorize_shift(hour):
+        if 4 <= hour <= 11: return 'AM'
+        elif 16 <= hour <= 23: return 'PM'
+        else: return 'Other'
+    pivot_df['time_slot'] = pivot_df['shift_opening_time'].dt.hour.apply(categorize_shift)
+    pivot_df['shift_slot'] = pivot_df['day_name'] + '-' + pivot_df['time_slot']
+    analysis_df = pivot_df[pivot_df['time_slot'] != 'Other'].copy()
+
+    baselines = analysis_df.groupby(['store_name', 'shift_slot'])['Americano'].mean().reset_index()
+    baselines.rename(columns={'Americano': 'avg_americano_orders'}, inplace=True)
+    analysis_df = pd.merge(analysis_df, baselines, on=['store_name', 'shift_slot'], how='left')
+    analysis_df['avg_americano_orders'] = analysis_df['avg_americano_orders'].fillna(0)
+    
+    analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
+    recent_shifts_df = analysis_df[analysis_df['shift_opening_time'] >= analysis_period_start].copy()
+    
+    recent_shifts_df['americano_vs_spanish_latte_pct'] = np.where(recent_shifts_df['Spanish Latte'] > 0, (recent_shifts_df['Americano'] / recent_shifts_df['Spanish Latte']), np.nan)
+    recent_shifts_df.loc[(recent_shifts_df['Spanish Latte'] == 0) & (recent_shifts_df['Americano'] > 0), 'americano_vs_spanish_latte_pct'] = 9.99
+    
+    anomalies = recent_shifts_df[recent_shifts_df['americano_vs_spanish_latte_pct'] > 0.6].copy()
+    anomalies.sort_values(by=['store_name', 'shift_opening_time'], inplace=True)
+    print(f"🚨 Found {len(anomalies)} suspicious ratio shifts.")
+    return anomalies
+
 def generate_summary_sales(all_shift_data):
     """Page 1: Weekly summary of sales vs historic average."""
-    print("📊 Generating Page 1: Summary Sales...")
+    print("📊 Generating 'Summary Sales' report...")
     analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
     baseline_df = all_shift_data[all_shift_data['shift_opening_time'] < analysis_period_start]
     recent_df = all_shift_data[all_shift_data['shift_opening_time'] >= analysis_period_start]
@@ -106,7 +160,7 @@ def generate_summary_sales(all_shift_data):
 
 def generate_granular_sales(all_shift_data):
     """Page 2: Granular shift sales vs historic average."""
-    print("📊 Generating Page 2: Granular Sales...")
+    print("📊 Generating 'Granular Sales' report...")
     analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
     baseline_df = all_shift_data[all_shift_data['shift_opening_time'] < analysis_period_start]
     recent_df = all_shift_data[all_shift_data['shift_opening_time'] >= analysis_period_start]
@@ -123,11 +177,10 @@ def generate_granular_sales(all_shift_data):
 
 def write_to_sheet(spreadsheet, sheet_name, df):
     """Helper function to write a DataFrame to a specified worksheet."""
-    if df.empty:
+    if df is None or df.empty:
         print(f"⚠️ No data to write for '{sheet_name}'. Skipping.")
         return
         
-    # Prepare DataFrame for upload (convert datetimes to strings)
     for col in df.select_dtypes(include=['datetimetz', 'datetime64[ns, Asia/Manila]']):
         df[col] = df[col].dt.strftime('%Y-%m-%d %H:%M:%S')
 
@@ -141,29 +194,36 @@ def write_to_sheet(spreadsheet, sheet_name, df):
     print(f"✅ Successfully wrote data to '{sheet_name}' tab.")
 
 def main():
-    base_data = get_base_shift_data(client, store_name_map)
-    if base_data is None:
-        print("Halting execution as no base data was found.")
-        return
+    # --- Open or Create the Google Sheet ---
+    try:
+        sh = gc.open(SPREADSHEET_NAME)
+        print(f"📖 Opened existing spreadsheet: '{SPREADSHEET_NAME}'")
+    except gspread.exceptions.SpreadsheetNotFound:
+        sh = gc.create(SPREADSHEET_NAME)
+        print(f"✨ Created new spreadsheet: '{SPREADSHEET_NAME}'")
+        sa_email = creds.service_account_email
+        sh.share(sa_email, perm_type='user', role='writer')
+        print(f"📧 Shared sheet with Service Account: {sa_email}")
 
     # --- Generate all reports ---
-    sales_dip_anomalies_df = generate_sales_dip_anomalies(base_data)
-    # The ratio analysis is separate and not requested, so it's commented out.
-    # ratio_anomalies_df = run_ratio_analysis(client, store_name_map)
-    summary_sales_df = generate_summary_sales(base_data)
-    granular_sales_df = generate_granular_sales(base_data)
+    base_shift_data = get_processed_shift_data(client, store_name_map)
+    
+    if base_shift_data is not None:
+        sales_dip_anomalies_df = generate_sales_dip_anomalies(base_shift_data)
+        summary_sales_df = generate_summary_sales(base_shift_data)
+        granular_sales_df = generate_granular_sales(base_shift_data)
+    else:
+        print("Halting shift-based analyses as no base data was found.")
+        sales_dip_anomalies_df = pd.DataFrame()
+        summary_sales_df = pd.DataFrame()
+        granular_sales_df = pd.DataFrame()
+    
+    ratio_anomalies_df = generate_ratio_anomalies(client, store_name_map)
 
     # --- Write all reports to Google Sheets ---
     print("\n📝 Writing all results to Google Sheets...")
-    try:
-        sh = gc.open(SPREADSHEET_NAME)
-    except gspread.exceptions.SpreadsheetNotFound:
-        sh = gc.create(SPREADSHEET_NAME)
-        sa_email = creds.service_account_email
-        sh.share(sa_email, perm_type='user', role='writer')
-
-    # Write each DataFrame to a different tab
     write_to_sheet(sh, "Sales Dip Anomalies", sales_dip_anomalies_df)
+    write_to_sheet(sh, "Ratio Anomalies", ratio_anomalies_df)
     write_to_sheet(sh, "Summary Sales", summary_sales_df)
     write_to_sheet(sh, "Granular Sales", granular_sales_df)
 
