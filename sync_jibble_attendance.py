@@ -1,7 +1,7 @@
 import os, json, datetime as dt, requests, sys
 from google.cloud import bigquery
 
-ENTRIES_PATH = os.environ.get("JIBBLE_ENTRIES_PATH", "/v2/time-tracking/time-entries")
+entries = [ {"payload": normalize(e)} for e in paginate(ENTRIES_PATH, params) ]
 
 API_BASE = os.environ.get("JIBBLE_API_BASE", "https://api.jibble.io")
 TOKEN = os.environ["JIBBLE_API_TOKEN"]
