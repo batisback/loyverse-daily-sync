@@ -48,7 +48,9 @@ jobs:
           BQ_DATASET: sbco_ops_jibble
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
+          JIBBLE_ENTRIES_PATH: /v2/time-tracking/time-entries
         run: python sync_jibble_attendance.py
+
 
       - name: MERGE to final
         run: bq query --quiet --use_legacy_sql=false < merge_final.sql
