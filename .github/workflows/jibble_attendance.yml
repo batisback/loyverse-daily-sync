@@ -1,0 +1,48 @@
+name: Jibble Attendance Daily
+
+on:
+  schedule:
+    - cron: "0 0 * * *"   # 00:00 UTC = 08:00 PH daily
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: 'YYYY-MM-DD (optional)'
+        required: false
+      end_date:
+        description: 'YYYY-MM-DD (optional)'
+        required: false
+
+concurrency:
+  group: jibble-attendance
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - name: Install & Auth gcloud (for bq CLI)
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          service_account_key: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+          export_default_credentials: true
+
+      - name: Sync Jibble (default: yesterday PH or provided range)
+        env:
+          JIBBLE_API_TOKEN: ${{ secrets.JIBBLE_API_TOKEN }}
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          BQ_DATASET: sbco_ops_jibble
+          START_DATE: ${{ github.event.inputs.start_date }}
+          END_DATE: ${{ github.event.inputs.end_date }}
+        run: python sync_jibble_attendance.py
+
+      - name: MERGE to final
+        run: bq query --quiet --use_legacy_sql=false < merge_final.sql
