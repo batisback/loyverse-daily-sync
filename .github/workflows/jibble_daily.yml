@@ -29,7 +29,7 @@ jobs:
       - name: Sync Jibble (default: yesterday PH)
         env:
           JIBBLE_API_TOKEN: ${{ secrets.JIBBLE_API_TOKEN }}
-          GCP_PROJECT: ${{ secrets.GCP_PROJECT }}            # should be loyverse-anomaly-warehouse
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}            # should be loyverse-anomaly-warehouse
           BQ_DATASET: sbco_ops_jibble
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
