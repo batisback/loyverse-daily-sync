@@ -36,10 +36,18 @@ jobs:
         with:
           credentials_json: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
 
-      - name: Setup gcloud (so bq CLI works)
+      - name: Setup gcloud (CLI only)
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Authenticate gcloud with base64 key (keeps other workflows untouched)
+        shell: bash
+        run: |
+          echo "${{ secrets.GCP_KEY_B64 }}" | base64 -d > "${HOME}/gcp.json"
+          gcloud auth activate-service-account --key-file="${HOME}/gcp.json"
+          gcloud config set project "${{ secrets.GCP_PROJECT_ID }}"
+
 
       - name: Sync Jibble
         env:
