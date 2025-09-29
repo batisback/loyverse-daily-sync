@@ -12,7 +12,6 @@ on:
         description: 'YYYY-MM-DD (optional)'
         required: false
 
-# Prevent overlapping runs
 concurrency:
   group: jibble-attendance
   cancel-in-progress: false
@@ -20,7 +19,6 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -30,7 +28,6 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      # Install gcloud so `bq` CLI works for the MERGE step
       - name: Install & Auth gcloud (for bq CLI)
         uses: google-github-actions/setup-gcloud@v2
         with:
@@ -41,7 +38,7 @@ jobs:
       - name: Sync Jibble (default: yesterday PH or provided range)
         env:
           JIBBLE_API_TOKEN: ${{ secrets.JIBBLE_API_TOKEN }}
-          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}   # use your existing secret name
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           BQ_DATASET: sbco_ops_jibble
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
