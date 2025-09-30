@@ -56,27 +56,47 @@ def window_from_env():
 # ---------- OAuth token (client credentials) ----------
 def get_access_token() -> str:
     if CLIENT_ID and CLIENT_SECRET:
-        # Jibble OAuth2 client credentials
-        token_url = f"{API_BASE}/oauth/token"
+        # Try several token endpoints commonly used by Jibble tenants
+        base_no_api = API_BASE.replace("/api", "")  # e.g. https://api.jibble.io
+        candidates = [
+            f"{API_BASE}/oauth/token",       # .../api/oauth/token
+            f"{API_BASE}/oauth2/token",      # .../api/oauth2/token
+            f"{base_no_api}/oauth/token",    # .../oauth/token
+            f"{base_no_api}/oauth2/token",   # .../oauth2/token
+        ]
+
         data = {
             "grant_type": "client_credentials",
             "client_id": CLIENT_ID,
             "client_secret": CLIENT_SECRET,
         }
-        r = requests.post(token_url, data=data, timeout=60)
-        if r.status_code >= 400:
-            print("OAuth error:", r.status_code, "URL:", token_url, "Body:", r.text[:800])
-            r.raise_for_status()
-        js = r.json()
-        tok = js.get("access_token")
-        if not tok:
-            fail("OAuth response missing access_token")
-        return tok
+
+        last_err = None
+        for url in candidates:
+            try:
+                r = requests.post(url, data=data, timeout=60)
+                if r.status_code >= 400:
+                    print("OAuth error:", r.status_code, "URL:", url, "Body:", r.text[:800])
+                    continue
+                js = r.json()
+                tok = js.get("access_token")
+                if tok:
+                    return tok
+                else:
+                    print("OAuth response missing access_token from", url, "body:", js)
+            except Exception as e:
+                last_err = e
+                print("OAuth exception for", url, "->", e)
+
+        if last_err:
+            raise last_err
+        fail("Could not obtain access_token from any known token endpoint.")
 
     if STATIC_TOKEN:
         return STATIC_TOKEN
 
     fail("Missing credentials: set JIBBLE_CLIENT_ID / JIBBLE_CLIENT_SECRET (or JIBBLE_API_TOKEN).")
+
 
 
 def build_headers():
