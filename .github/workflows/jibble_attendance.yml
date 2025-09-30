@@ -1,210 +1,70 @@
-# sync_jibble_attendance.py
-import os
-import sys
-import datetime as dt
-import requests
-from urllib.parse import urlencode
-from google.cloud import bigquery
+name: Jibble Attendance Daily
 
-# ========= Config via ENV =========
-API_BASE = os.environ.get("JIBBLE_API_BASE", "https://api.jibble.io/api").rstrip("/")
-# NOTE: ENTRIES_PATH is only used for REST host (api.jibble.io). On workspace host we ignore it.
-ENTRIES_PATH = os.environ.get("JIBBLE_ENTRIES_PATH", "/v1/time-entries")
+on:
+  schedule:
+    - cron: "0 0 * * *"   # 00:00 UTC = 08:00 PH daily
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "YYYY-MM-DD (optional)"
+        required: false
+      end_date:
+        description: "YYYY-MM-DD (optional)"
+        required: false
 
-# Jibble auth (API Credentials screen)
-API_KEY_ID = os.environ.get("JIBBLE_API_KEY_ID", "").strip()
-API_KEY_SECRET = os.environ.get("JIBBLE_API_KEY_SECRET", "").strip()
-# Optional: some tenants require org/workspace id
-ORG_ID = os.environ.get("JIBBLE_ORG_ID", "").strip()
+concurrency:
+  group: jibble-attendance
+  cancel-in-progress: false
 
-# GCP / BigQuery
-PROJECT = os.environ.get("GCP_PROJECT", "").strip()
-DATASET = os.environ.get("BQ_DATASET", "").strip()
-RAW_TABLE = f"{PROJECT}.{DATASET}.jibble_raw_attendance" if PROJECT and DATASET else None
+jobs:
+  sync:
+    runs-on: ubuntu-latest
 
-# PH timezone
-TZ = dt.timezone(dt.timedelta(hours=8))
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-def fail(msg: str):
-    print(msg, file=sys.stderr)
-    sys.exit(1)
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-def parse_date(s: str) -> dt.date:
-    return dt.datetime.strptime(s, "%Y-%m-%d").date()
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
-def window_from_env():
-    sd = os.getenv("START_DATE")
-    ed = os.getenv("END_DATE")
-    if sd and ed:
-        s = parse_date(sd); e = parse_date(ed)
-    else:
-        y = (dt.datetime.now(TZ).date() - dt.timedelta(days=1))
-        s = e = y
-    return (
-        dt.datetime.combine(s, dt.time.min, TZ),
-        dt.datetime.combine(e, dt.time.max, TZ),
-    )
+      # gcloud CLI so we can use bq
+      - name: Setup gcloud (CLI only)
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
 
-def is_workspace_api() -> bool:
-    # OData lives under workspace.prod.jibble.io (and similar)
-    return "workspace." in API_BASE
+      - name: Authenticate gcloud with base64 key
+        shell: bash
+        run: |
+          echo "${{ secrets.GCP_KEY_B64 }}" | base64 -d > "${HOME}/gcp.json"
+          gcloud auth activate-service-account --key-file="${HOME}/gcp.json"
+          gcloud config set project "${{ secrets.GCP_PROJECT_ID }}"
 
-def build_headers():
-    if not (API_KEY_ID and API_KEY_SECRET):
-        fail("Missing Jibble credentials: set JIBBLE_API_KEY_ID and JIBBLE_API_KEY_SECRET.")
-    headers = {
-        "Accept": "application/json",
-        # Primary API Credentials headers:
-        "X-API-KEY-ID": API_KEY_ID,
-        "X-API-KEY-SECRET": API_KEY_SECRET,
-        # Add common alternates (harmless if not used by tenant):
-        "X-API-KEY": API_KEY_SECRET,
-        "Authorization": f"ApiKey {API_KEY_SECRET}",
-    }
-    if ORG_ID:
-        headers["X-Organization-Id"] = ORG_ID
-        headers["X-Org-Id"] = ORG_ID
-    return headers
+      # ---- Jibble → BigQuery ----
+      - name: Sync Jibble Attendance to BigQuery (raw)
+        env:
+          # ✅ Jibble API Key auth (from Jibble > Settings > API Credentials)
+          JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
+          JIBBLE_API_KEY_SECRET: ${{ secrets.JIBBLE_API_KEY_SECRET }}
+          # Workspace / Organization ID (we found yours)
+          JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
 
-def safe_headers_for_log(h):
-    masked = {}
-    for k, v in h.items():
-        kl = k.lower()
-        if any(x in kl for x in ["secret", "authorization", "api-key"]):
-            masked[k] = "***"
-        else:
-            masked[k] = v
-    return masked
+          # BigQuery + window
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          BQ_DATASET: sbco_ops_jibble
+          START_DATE: ${{ github.event.inputs.start_date }}
+          END_DATE: ${{ github.event.inputs.end_date }}
 
-def http_get(full_url: str, headers):
-    r = requests.get(full_url, headers=headers, timeout=60)
-    if r.status_code >= 400:
-        print("Jibble API error:", r.status_code)
-        print("URL:", r.url)
-        print("Sent headers:", safe_headers_for_log(headers))
-        print("Body:", r.text[:800])
-    r.raise_for_status()
-    return r.json() if r.text else {}
+          # Jibble API routing (workspace OData API)
+          JIBBLE_API_BASE: https://workspace.prod.jibble.io
+          # kept for compatibility; code switches to OData when using workspace host
+          JIBBLE_ENTRIES_PATH: /v1/time-entries
+        run: python sync_jibble_attendance.py
 
-# -------- OData paginator (workspace host) --------
-def paginate_workspace_time_entries(org_id: str, date_from: dt.datetime, date_to: dt.datetime, headers):
-    """
-    GET {API_BASE}/v1/Organizations(<ORG_ID>)/TimeEntries
-        ?$filter=startedAt ge <from> and startedAt le <to>
-        &$orderby=startedAt asc
-        &$top=200
-        &$skip=<n>
-    """
-    if not org_id:
-        fail("JIBBLE_ORG_ID is required when using workspace API.")
-    top = 200
-    skip = 0
-    base = f"{API_BASE}/v1/Organizations({org_id})/TimeEntries"
-    # OData filter — timestamps in ISO8601; timezone offset is fine
-    filt = f"startedAt ge {date_from.isoformat()} and startedAt le {date_to.isoformat()}"
-
-    while True:
-        q = {"$filter": filt, "$orderby": "startedAt asc", "$top": top, "$skip": skip}
-        url = f"{base}?{urlencode(q)}"
-        js = http_get(url, headers)
-        items = js.get("value", []) if isinstance(js, dict) else js
-        if not items:
-            break
-        for it in items:
-            yield it
-        if len(items) < top:
-            break
-        skip += top
-
-# -------- REST paginator (api host) --------
-def paginate_rest_time_entries(path: str, date_from: dt.datetime, date_to: dt.datetime, headers):
-    page = 1
-    while True:
-        p = {"from": date_from.isoformat(), "to": date_to.isoformat(), "page": page, "limit": 200}
-        url = f"{API_BASE}{path}?{urlencode(p)}"
-        js = http_get(url, headers)
-        if isinstance(js, list):
-            items = js
-            next_page = len(items) == p["limit"]
-        else:
-            items = js.get("data", [])
-            next_page = bool(js.get("nextPage")) or len(items) == p["limit"]
-        if not items:
-            break
-        for it in items:
-            yield it
-        if not next_page:
-            break
-        page += 1
-
-# -------- Normalization helpers --------
-def iso_date(ts_iso): return ts_iso[:10] if ts_iso else None
-
-def iso_time(ts_iso):
-    if not ts_iso: return None
-    try: return ts_iso.split("T")[1][:8]
-    except Exception: return None
-
-def sec_to_hms(sec):
-    if sec is None: return None
-    sec = int(sec); h = sec//3600; m = (sec%3600)//60; s = sec%60
-    return f"{h:02d}:{m:02d}:{s:02d}"
-
-def normalize(entry: dict):
-    # Works for both OData and REST if fields are named similarly
-    start = entry.get("startedAt") or entry.get("startAt")
-    end   = entry.get("endedAt")  or entry.get("endAt")
-    time_iso = start or end
-    person = entry.get("person") or {}
-    group  = entry.get("group") or {}
-    activity = entry.get("activity") or {}
-    kiosk = entry.get("kiosk") or {}
-
-    return {
-        "Date": iso_date(time_iso),
-        "Full Name": person.get("name"),
-        "Group": group.get("name") or None,
-        "EntryType": entry.get("type") or entry.get("entryType"),
-        "Time": iso_time(time_iso),
-        "Duration": sec_to_hms(entry.get("durationSeconds")) if entry.get("durationSeconds") is not None else None,
-        "Activity": activity.get("name"),
-        "Kiosk Name": kiosk.get("name"),
-        "Created On": entry.get("createdAt"),
-        "Last Edited On": entry.get("updatedAt") or entry.get("lastEditedOn"),
-    }
-
-def main():
-    if not PROJECT or not DATASET or not RAW_TABLE:
-        fail("Missing env vars: GCP_PROJECT and/or BQ_DATASET (needed for RAW_TABLE).")
-
-    date_from, date_to = window_from_env()
-    headers = build_headers()
-
-    # Optional quick auth probe
-    try:
-        if is_workspace_api():
-            probe_url = f"{API_BASE}/v1/Organizations({ORG_ID})"
-        else:
-            probe_url = f"{API_BASE}/v1/organizations"
-        _ = http_get(probe_url, headers)
-        print("Auth probe OK:", probe_url)
-    except Exception as e:
-        print("Auth probe failed (continuing):", e)
-
-    if is_workspace_api():
-        gen = paginate_workspace_time_entries(ORG_ID, date_from, date_to, headers)
-    else:
-        gen = paginate_rest_time_entries(ENTRIES_PATH, date_from, date_to, headers)
-
-    entries = [{"payload": normalize(e)} for e in gen]
-    if not entries:
-        print("No rows for window.")
-        return
-
-    client = bigquery.Client(project=PROJECT)
-    job = client.load_table_from_json(entries, RAW_TABLE)
-    job.result()
-    print(f"Loaded {len(entries)} rows into {RAW_TABLE}")
-
-if __name__ == "__main__":
-    main()
+      - name: MERGE raw → final
+        run: bq query --quiet --use_legacy_sql=false < merge_final.sql
