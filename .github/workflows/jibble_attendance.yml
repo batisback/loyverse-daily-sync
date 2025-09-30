@@ -61,7 +61,7 @@ jobs:
           END_DATE: ${{ github.event.inputs.end_date }}
 
           # Jibble API routing
-          JIBBLE_API_BASE: https://api.jibble.io/api
+          JIBBLE_API_BASE: https://workspace.prod.jibble.io
           JIBBLE_ENTRIES_PATH: /v1/time-entries   # change to /v2/time-entries if needed
         run: python sync_jibble_attendance.py
 
