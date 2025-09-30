@@ -70,20 +70,12 @@ jobs:
 
       - name: Sync Jibble
         env:
-          # OAuth client credentials (from your Jibble UI)
-          JIBBLE_CLIENT_ID: ${{ secrets.JIBBLE_CLIENT_ID }}
-          JIBBLE_CLIENT_SECRET: ${{ secrets.JIBBLE_CLIENT_SECRET }}
-
-          # Optional: org/workspace id if your tenant requires it
-          # JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
-
-          # Pull window + BigQuery
+          JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
+          JIBBLE_API_KEY_SECRET: ${{ secrets.JIBBLE_API_KEY_SECRET }}
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           BQ_DATASET: sbco_ops_jibble
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
-
-          # Base + path (we’ve confirmed v1 exists for you)
           JIBBLE_API_BASE: https://api.jibble.io/api
           JIBBLE_ENTRIES_PATH: /v1/time-entries
         run: python sync_jibble_attendance.py
