@@ -1,7 +1,8 @@
 import os, json, datetime as dt, requests, sys
 from google.cloud import bigquery
 
-ENTRIES_PATH = os.environ.get("JIBBLE_ENTRIES_PATH", "/v2/time-tracking/time-entries")
+API_BASE = os.environ.get("JIBBLE_API_BASE", "https://api.jibble.io")
+ENTRIES_PATH = os.environ.get("JIBBLE_ENTRIES_PATH", "/v1/time-entries")
 
 API_BASE = os.environ.get("JIBBLE_API_BASE", "https://api.jibble.io")
 TOKEN = os.environ["JIBBLE_API_TOKEN"]
@@ -29,7 +30,11 @@ def window_from_env():
     )
 
 def fetch(path, params):
-    r = requests.get(f"{API_BASE}{path}", headers=HEADERS, params=params, timeout=60)
+    url = f"{API_BASE}{path}"
+    r = requests.get(url, headers=HEADERS, params=params, timeout=60)
+    if r.status_code >= 400:
+        print("Jibble API error:", r.status_code, "URL:", r.url)
+        print("Body:", r.text[:800])
     r.raise_for_status()
     return r.json()
 
@@ -76,7 +81,7 @@ def main():
     date_from, date_to = window_from_env()
     params = {"from": date_from.isoformat(), "to": date_to.isoformat()}
     # Endpoint path may differ in your account; adjust if needed
-    entries = [ {"payload": normalize(e)} for e in paginate(ENTRIES_PATH, params) ]
+    entries = [{"payload": normalize(e)} for e in paginate(ENTRIES_PATH, params)]
 
     if not entries:
         print("No rows for window."); return
