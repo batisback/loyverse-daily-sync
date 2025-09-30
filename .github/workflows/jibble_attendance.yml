@@ -31,7 +31,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Use your existing BASE64 key (GCP_KEY_B64). No auth@v2, no JSON parsing issues.
+      # Use your existing BASE64 key (GCP_KEY_B64)
       - name: Setup gcloud (CLI only)
         uses: google-github-actions/setup-gcloud@v2
         with:
@@ -44,12 +44,37 @@ jobs:
           gcloud auth activate-service-account --key-file="${HOME}/gcp.json"
           gcloud config set project "${{ secrets.GCP_PROJECT_ID }}"
 
-      - name: Sync Jibble
+      # --- Preflight: find the correct OAuth token endpoint ---
+      - name: Debug Jibble token endpoints
+        shell: bash
         env:
-          # OAuth client credentials (from your screenshot)
           JIBBLE_CLIENT_ID: ${{ secrets.JIBBLE_CLIENT_ID }}
           JIBBLE_CLIENT_SECRET: ${{ secrets.JIBBLE_CLIENT_SECRET }}
-          # Optional: org/workspace id if your tenant requires it (add as a secret if needed)
+        run: |
+          set -e
+          for u in \
+            "https://api.jibble.io/api/oauth/token" \
+            "https://api.jibble.io/api/oauth2/token" \
+            "https://api.jibble.io/oauth/token" \
+            "https://api.jibble.io/oauth2/token"
+          do
+            echo "POST $u"
+            curl -sS -X POST "$u" \
+              -d "grant_type=client_credentials&client_id=${JIBBLE_CLIENT_ID}&client_secret=${JIBBLE_CLIENT_SECRET}" \
+              -D /tmp/h.txt | head -c 300 || true
+            echo
+            echo "---- status ----"
+            head -n 1 /tmp/h.txt || true
+            echo
+          done
+
+      - name: Sync Jibble
+        env:
+          # OAuth client credentials (from your Jibble UI)
+          JIBBLE_CLIENT_ID: ${{ secrets.JIBBLE_CLIENT_ID }}
+          JIBBLE_CLIENT_SECRET: ${{ secrets.JIBBLE_CLIENT_SECRET }}
+
+          # Optional: org/workspace id if your tenant requires it
           # JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
 
           # Pull window + BigQuery
@@ -58,12 +83,10 @@ jobs:
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
 
-          # Base + path confirmed to exist for your tenant
+          # Base + path (we’ve confirmed v1 exists for you)
           JIBBLE_API_BASE: https://api.jibble.io/api
           JIBBLE_ENTRIES_PATH: /v1/time-entries
         run: python sync_jibble_attendance.py
-
-
 
       - name: MERGE to final
         run: bq query --quiet --use_legacy_sql=false < merge_final.sql
