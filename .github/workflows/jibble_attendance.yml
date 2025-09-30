@@ -51,20 +51,12 @@ jobs:
           BQ_DATASET: sbco_ops_jibble
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
-
-          # ✅ Correct base needs /api
           JIBBLE_API_BASE: https://api.jibble.io/api
-
-          # ✅ Try the v2 time-tracking route first
-          JIBBLE_ENTRIES_PATH: /v2/time-tracking/time-entries
-
-          # ✅ Switch to Bearer style (most common)
-          JIBBLE_AUTH_STYLE: bearer
-
-          # (Optional) If your Jibble org shows an Organization ID in Settings → Organization / API,
-          # uncomment and set it (or add as a secret and reference it here)
-          # JIBBLE_ORG_ID: 1234567890
+          JIBBLE_ENTRIES_PATH: /v1/time-entries
+          JIBBLE_AUTH_STYLE: bearer   # <— try this first
+          # JIBBLE_ORG_ID: 1234567890 # <— if needed
         run: python sync_jibble_attendance.py
+
 
       - name: MERGE to final
         run: bq query --quiet --use_legacy_sql=false < merge_final.sql
