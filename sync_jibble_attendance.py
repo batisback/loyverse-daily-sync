@@ -54,19 +54,35 @@ def is_workspace_api() -> bool:
 def build_headers():
     if not (API_KEY_ID and API_KEY_SECRET):
         fail("Missing Jibble credentials: set JIBBLE_API_KEY_ID and JIBBLE_API_KEY_SECRET.")
+
+    # Basic <base64(id:secret)>
+    basic = base64.b64encode(f"{API_KEY_ID}:{API_KEY_SECRET}".encode()).decode()
+
     headers = {
         "Accept": "application/json",
-        # Primary API Credentials headers:
+        "OData-Version": "4.0",                 # OData hint
+        # Primary API Credentials headers you already tried:
         "X-API-KEY-ID": API_KEY_ID,
         "X-API-KEY-SECRET": API_KEY_SECRET,
-        # Add common alternates (harmless if not used by tenant):
         "X-API-KEY": API_KEY_SECRET,
         "Authorization": f"ApiKey {API_KEY_SECRET}",
+        # Add Basic as well (some tenants expect this on workspace API):
+        "Authorization-Basic": f"Basic {basic}",  # note: not a real header; see below
     }
+
+    # We can't have two 'Authorization' keys. So we’ll choose which one to send:
+    # Prefer Basic for workspace; ApiKey for api.jibble.io REST.
+    if is_workspace_api():
+        headers["Authorization"] = f"Basic {basic}"
+    else:
+        headers["Authorization"] = f"ApiKey {API_KEY_SECRET}"
+
     if ORG_ID:
         headers["X-Organization-Id"] = ORG_ID
         headers["X-Org-Id"] = ORG_ID
+
     return headers
+
 
 def safe_headers_for_log(h):
     masked = {}
@@ -91,22 +107,24 @@ def http_get(full_url: str, headers):
 # -------- OData paginator (workspace host) --------
 def paginate_workspace_time_entries(org_id: str, date_from: dt.datetime, date_to: dt.datetime, headers):
     """
-    GET {API_BASE}/v1/Organizations(<ORG_ID>)/TimeEntries
-        ?$filter=startedAt ge <from> and startedAt le <to>
-        &$orderby=startedAt asc
-        &$top=200
-        &$skip=<n>
+    OData path (slash form):
+      GET /v1/Organizations/{ORG_ID}/TimeEntries
+          ?$filter=startedAt ge <from> and startedAt le <to>
+          &$orderby=startedAt asc
+          &$top=200
+          &$skip=<n>
+          &$format=json
     """
     if not org_id:
         fail("JIBBLE_ORG_ID is required when using workspace API.")
     top = 200
     skip = 0
-    base = f"{API_BASE}/v1/Organizations({org_id})/TimeEntries"
-    # OData filter — timestamps in ISO8601; timezone offset is fine
+    base = f"{API_BASE}/v1/Organizations/{org_id}/TimeEntries"
+
     filt = f"startedAt ge {date_from.isoformat()} and startedAt le {date_to.isoformat()}"
 
     while True:
-        q = {"$filter": filt, "$orderby": "startedAt asc", "$top": top, "$skip": skip}
+        q = {"$filter": filt, "$orderby": "startedAt asc", "$top": top, "$skip": skip, "$format": "json"}
         url = f"{base}?{urlencode(q)}"
         js = http_get(url, headers)
         items = js.get("value", []) if isinstance(js, dict) else js
@@ -117,6 +135,7 @@ def paginate_workspace_time_entries(org_id: str, date_from: dt.datetime, date_to
         if len(items) < top:
             break
         skip += top
+
 
 # -------- REST paginator (api host) --------
 def paginate_rest_time_entries(path: str, date_from: dt.datetime, date_to: dt.datetime, headers):
@@ -182,22 +201,26 @@ def main():
     date_from, date_to = window_from_env()
     headers = build_headers()
 
-    # Optional quick auth probe
+    # --- Auth probe (only one place) ---
     try:
         if is_workspace_api():
-            probe_url = f"{API_BASE}/v1/Organizations({ORG_ID})"
+            # Workspace OData API → slash path
+            probe_url = f"{API_BASE}/v1/Organizations/{ORG_ID}"
         else:
+            # REST API → lowercase plural
             probe_url = f"{API_BASE}/v1/organizations"
         _ = http_get(probe_url, headers)
         print("Auth probe OK:", probe_url)
     except Exception as e:
         print("Auth probe failed (continuing):", e)
 
+    # --- Choose which paginator to use ---
     if is_workspace_api():
         gen = paginate_workspace_time_entries(ORG_ID, date_from, date_to, headers)
     else:
         gen = paginate_rest_time_entries(ENTRIES_PATH, date_from, date_to, headers)
 
+    # --- Normalize + load into BQ ---
     entries = [{"payload": normalize(e)} for e in gen]
     if not entries:
         print("No rows for window.")
@@ -208,5 +231,3 @@ def main():
     job.result()
     print(f"Loaded {len(entries)} rows into {RAW_TABLE}")
 
-if __name__ == "__main__":
-    main()
