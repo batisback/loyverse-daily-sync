@@ -51,8 +51,9 @@ jobs:
           BQ_DATASET: sbco_ops_jibble
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
-          # Try v2 route first; if 404, change to /v1/time-tracking/time-entries or /v2/time-entries
-          JIBBLE_ENTRIES_PATH: /v2/time-tracking/time-entries
+          # Start with this pair (very often correct):
+          JIBBLE_API_BASE: https://api.jibble.io/api
+          JIBBLE_ENTRIES_PATH: /v1/time-entries
         run: python sync_jibble_attendance.py
 
       - name: MERGE to final
