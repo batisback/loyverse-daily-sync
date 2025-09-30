@@ -3,21 +3,18 @@ import os
 import sys
 import datetime as dt
 import requests
+from urllib.parse import urlencode
 from google.cloud import bigquery
 
 # ========= Config via ENV =========
 API_BASE = os.environ.get("JIBBLE_API_BASE", "https://api.jibble.io/api").rstrip("/")
-ENTRIES_PATH = os.environ.get("JIBBLE_ENTRIES_PATH", "/v1/time-entries")  # try /v2/time-entries if needed
+# NOTE: ENTRIES_PATH is only used for REST host (api.jibble.io). On workspace host we ignore it.
+ENTRIES_PATH = os.environ.get("JIBBLE_ENTRIES_PATH", "/v1/time-entries")
 
-# Auth (preferred): API Key ID + API Key Secret (from Jibble "API Credentials" screen)
+# Jibble auth (API Credentials screen)
 API_KEY_ID = os.environ.get("JIBBLE_API_KEY_ID", "").strip()
 API_KEY_SECRET = os.environ.get("JIBBLE_API_KEY_SECRET", "").strip()
-
-# Optional fallback: personal access token (PAT) or legacy token
-API_TOKEN = os.environ.get("JIBBLE_API_TOKEN", "").strip()
-AUTH_STYLE = os.environ.get("JIBBLE_AUTH_STYLE", "api-key").lower()  # 'api-key' or 'bearer' for PATs
-
-# Optional: some tenants need org/workspace id
+# Optional: some tenants require org/workspace id
 ORG_ID = os.environ.get("JIBBLE_ORG_ID", "").strip()
 
 # GCP / BigQuery
@@ -48,36 +45,26 @@ def window_from_env():
         dt.datetime.combine(e, dt.time.max, TZ),
     )
 
-# ---------- Headers ----------
+def is_workspace_api() -> bool:
+    # OData lives under workspace.prod.jibble.io (and similar)
+    return "workspace." in API_BASE
+
 def build_headers():
-    headers = {"Accept": "application/json"}
-
-    if API_KEY_ID and API_KEY_SECRET:
-        # what you already had
-        headers["X-API-KEY-ID"] = API_KEY_ID
-        headers["X-API-KEY-SECRET"] = API_KEY_SECRET
-
-        # add both of these — some tenants require one of them
-        headers["X-API-KEY"] = API_KEY_SECRET
-        headers["Authorization"] = f"ApiKey {API_KEY_SECRET}"
-
-    elif API_TOKEN:  # fallback if you ever switch to PAT
-        if AUTH_STYLE == "bearer":
-            headers["Authorization"] = f"Bearer {API_TOKEN}"
-        else:
-            headers["X-API-KEY"] = API_TOKEN
-    else:
-        fail(
-            "Missing Jibble credentials: set JIBBLE_API_KEY_ID and JIBBLE_API_KEY_SECRET "
-            "(or JIBBLE_API_TOKEN with JIBBLE_AUTH_STYLE=api-key|bearer)."
-        )
-
+    if not (API_KEY_ID and API_KEY_SECRET):
+        fail("Missing Jibble credentials: set JIBBLE_API_KEY_ID and JIBBLE_API_KEY_SECRET.")
+    headers = {
+        "Accept": "application/json",
+        # Primary API Credentials headers:
+        "X-API-KEY-ID": API_KEY_ID,
+        "X-API-KEY-SECRET": API_KEY_SECRET,
+        # Add common alternates (harmless if not used by tenant):
+        "X-API-KEY": API_KEY_SECRET,
+        "Authorization": f"ApiKey {API_KEY_SECRET}",
+    }
     if ORG_ID:
         headers["X-Organization-Id"] = ORG_ID
         headers["X-Org-Id"] = ORG_ID
-
     return headers
-
 
 def safe_headers_for_log(h):
     masked = {}
@@ -89,9 +76,8 @@ def safe_headers_for_log(h):
             masked[k] = v
     return masked
 
-def fetch(path, params, headers):
-    url = f"{API_BASE}{path}"
-    r = requests.get(url, headers=headers, params=params, timeout=60)
+def http_get(full_url: str, headers):
+    r = requests.get(full_url, headers=headers, timeout=60)
     if r.status_code >= 400:
         print("Jibble API error:", r.status_code)
         print("URL:", r.url)
@@ -100,29 +86,58 @@ def fetch(path, params, headers):
     r.raise_for_status()
     return r.json() if r.text else {}
 
-def paginate(path, params, headers, data_key="data"):
+# -------- OData paginator (workspace host) --------
+def paginate_workspace_time_entries(org_id: str, date_from: dt.datetime, date_to: dt.datetime, headers):
+    """
+    GET {API_BASE}/v1/Organizations(<ORG_ID>)/TimeEntries
+        ?$filter=startedAt ge <from> and startedAt le <to>
+        &$orderby=startedAt asc
+        &$top=200
+        &$skip=<n>
+    """
+    if not org_id:
+        fail("JIBBLE_ORG_ID is required when using workspace API.")
+    top = 200
+    skip = 0
+    base = f"{API_BASE}/v1/Organizations({org_id})/TimeEntries"
+    # OData filter — timestamps in ISO8601; timezone offset is fine
+    filt = f"startedAt ge {date_from.isoformat()} and startedAt le {date_to.isoformat()}"
+
+    while True:
+        q = {"$filter": filt, "$orderby": "startedAt asc", "$top": top, "$skip": skip}
+        url = f"{base}?{urlencode(q)}"
+        js = http_get(url, headers)
+        items = js.get("value", []) if isinstance(js, dict) else js
+        if not items:
+            break
+        for it in items:
+            yield it
+        if len(items) < top:
+            break
+        skip += top
+
+# -------- REST paginator (api host) --------
+def paginate_rest_time_entries(path: str, date_from: dt.datetime, date_to: dt.datetime, headers):
     page = 1
     while True:
-        p = dict(params); p.update({"page": page, "limit": 200})
-        js = fetch(path, p, headers)
-
+        p = {"from": date_from.isoformat(), "to": date_to.isoformat(), "page": page, "limit": 200}
+        url = f"{API_BASE}{path}?{urlencode(p)}"
+        js = http_get(url, headers)
         if isinstance(js, list):
             items = js
             next_page = len(items) == p["limit"]
         else:
-            items = js.get(data_key, [])
+            items = js.get("data", [])
             next_page = bool(js.get("nextPage")) or len(items) == p["limit"]
-
         if not items:
             break
-
         for it in items:
             yield it
-
         if not next_page:
             break
         page += 1
 
+# -------- Normalization helpers --------
 def iso_date(ts_iso): return ts_iso[:10] if ts_iso else None
 
 def iso_time(ts_iso):
@@ -136,18 +151,24 @@ def sec_to_hms(sec):
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 def normalize(entry: dict):
+    # Works for both OData and REST if fields are named similarly
     start = entry.get("startedAt") or entry.get("startAt")
     end   = entry.get("endedAt")  or entry.get("endAt")
     time_iso = start or end
+    person = entry.get("person") or {}
+    group  = entry.get("group") or {}
+    activity = entry.get("activity") or {}
+    kiosk = entry.get("kiosk") or {}
+
     return {
         "Date": iso_date(time_iso),
-        "Full Name": (entry.get("person") or {}).get("name"),
-        "Group": ((entry.get("group") or {}).get("name")) or None,
+        "Full Name": person.get("name"),
+        "Group": group.get("name") or None,
         "EntryType": entry.get("type") or entry.get("entryType"),
         "Time": iso_time(time_iso),
         "Duration": sec_to_hms(entry.get("durationSeconds")) if entry.get("durationSeconds") is not None else None,
-        "Activity": (entry.get("activity") or {}).get("name"),
-        "Kiosk Name": (entry.get("kiosk") or {}).get("name"),
+        "Activity": activity.get("name"),
+        "Kiosk Name": kiosk.get("name"),
         "Created On": entry.get("createdAt"),
         "Last Edited On": entry.get("updatedAt") or entry.get("lastEditedOn"),
     }
@@ -157,10 +178,25 @@ def main():
         fail("Missing env vars: GCP_PROJECT and/or BQ_DATASET (needed for RAW_TABLE).")
 
     date_from, date_to = window_from_env()
-    params = {"from": date_from.isoformat(), "to": date_to.isoformat()}
     headers = build_headers()
 
-    entries = [{"payload": normalize(e)} for e in paginate(ENTRIES_PATH, params, headers)]
+    # Optional quick auth probe
+    try:
+        if is_workspace_api():
+            probe_url = f"{API_BASE}/v1/Organizations({ORG_ID})"
+        else:
+            probe_url = f"{API_BASE}/v1/organizations"
+        _ = http_get(probe_url, headers)
+        print("Auth probe OK:", probe_url)
+    except Exception as e:
+        print("Auth probe failed (continuing):", e)
+
+    if is_workspace_api():
+        gen = paginate_workspace_time_entries(ORG_ID, date_from, date_to, headers)
+    else:
+        gen = paginate_rest_time_entries(ENTRIES_PATH, date_from, date_to, headers)
+
+    entries = [{"payload": normalize(e)} for e in gen]
     if not entries:
         print("No rows for window.")
         return
