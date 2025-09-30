@@ -19,6 +19,7 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Use your existing BASE64 key (GCP_KEY_B64)
+      # gcloud CLI so we can use bq
       - name: Setup gcloud (CLI only)
         uses: google-github-actions/setup-gcloud@v2
         with:
@@ -44,41 +45,25 @@ jobs:
           gcloud auth activate-service-account --key-file="${HOME}/gcp.json"
           gcloud config set project "${{ secrets.GCP_PROJECT_ID }}"
 
-      # --- Preflight: find the correct OAuth token endpoint ---
-      - name: Debug Jibble token endpoints
-        shell: bash
+      # ---- Jibble → BigQuery ----
+      - name: Sync Jibble Attendance to BigQuery (raw)
         env:
-          JIBBLE_CLIENT_ID: ${{ secrets.JIBBLE_CLIENT_ID }}
-          JIBBLE_CLIENT_SECRET: ${{ secrets.JIBBLE_CLIENT_SECRET }}
-        run: |
-          set -e
-          for u in \
-            "https://api.jibble.io/api/oauth/token" \
-            "https://api.jibble.io/api/oauth2/token" \
-            "https://api.jibble.io/oauth/token" \
-            "https://api.jibble.io/oauth2/token"
-          do
-            echo "POST $u"
-            curl -sS -X POST "$u" \
-              -d "grant_type=client_credentials&client_id=${JIBBLE_CLIENT_ID}&client_secret=${JIBBLE_CLIENT_SECRET}" \
-              -D /tmp/h.txt | head -c 300 || true
-            echo
-            echo "---- status ----"
-            head -n 1 /tmp/h.txt || true
-            echo
-          done
-
-      - name: Sync Jibble
-        env:
+          # ✅ Jibble API Key auth (from Jibble > Settings > API Credentials)
           JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
           JIBBLE_API_KEY_SECRET: ${{ secrets.JIBBLE_API_KEY_SECRET }}
+          # Some tenants require this (we found yours): Organization / Workspace ID
+          JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
+
+          # BigQuery + window
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           BQ_DATASET: sbco_ops_jibble
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
+
+          # Jibble API routing
           JIBBLE_API_BASE: https://api.jibble.io/api
-          JIBBLE_ENTRIES_PATH: /v1/time-entries
+          JIBBLE_ENTRIES_PATH: /v1/time-entries   # change to /v2/time-entries if needed
         run: python sync_jibble_attendance.py
 
-      - name: MERGE to final
+      - name: MERGE raw → final
         run: bq query --quiet --use_legacy_sql=false < merge_final.sql
