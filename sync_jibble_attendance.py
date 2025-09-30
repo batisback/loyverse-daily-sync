@@ -106,3 +106,96 @@ def paginate(path, params, headers, data_key="data"):
 
         # Normalize items
         if isinstance(js, list):
+            items = js
+            next_page_exists = len(items) == p["limit"]
+        else:
+            items = js.get(data_key, [])
+            next_page_exists = bool(js.get("nextPage")) or len(items) == p["limit"]
+
+        if not items:
+            break
+
+        for it in items:
+            yield it
+
+        if not next_page_exists:
+            break
+
+        page += 1
+
+
+def iso_date(ts_iso):
+    return ts_iso[:10] if ts_iso else None
+
+
+def iso_time(ts_iso):
+    if not ts_iso:
+        return None
+    try:
+        return ts_iso.split("T")[1][:8]
+    except Exception:
+        return None
+
+
+def sec_to_hms(sec):
+    if sec is None:
+        return None
+    sec = int(sec)
+    h = sec // 3600
+    m = (sec % 3600) // 60
+    s = sec % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def normalize(entry: dict):
+    """
+    Map API fields to the 8 columns we want (plus created/updated for MERGE freshness).
+    If your account uses slightly different field names, adjust here.
+    """
+    start = entry.get("startedAt") or entry.get("startAt")
+    end = entry.get("endedAt") or entry.get("endAt")
+    time_iso = start or end
+
+    return {
+        "Date": iso_date(time_iso),
+        "Full Name": (entry.get("person") or {}).get("name"),
+        "Group": ((entry.get("group") or {}).get("name")) or None,
+        "EntryType": entry.get("type") or entry.get("entryType"),
+        "Time": iso_time(time_iso),
+        "Duration": sec_to_hms(entry.get("durationSeconds")) if entry.get("durationSeconds") is not None else None,
+        "Activity": (entry.get("activity") or {}).get("name"),
+        "Kiosk Name": (entry.get("kiosk") or {}).get("name"),
+        "Created On": entry.get("createdAt"),
+        "Last Edited On": entry.get("updatedAt") or entry.get("lastEditedOn"),
+    }
+
+
+def main():
+    # Validate required envs
+    if not PROJECT or not DATASET:
+        _fail("Missing env vars: GCP_PROJECT and/or BQ_DATASET")
+
+    if not RAW_TABLE:
+        _fail("Could not construct RAW_TABLE; check GCP_PROJECT/BQ_DATASET")
+
+    # Date window in PH time
+    date_from, date_to = window_from_env()
+    params = {"from": date_from.isoformat(), "to": date_to.isoformat()}
+
+    headers = build_headers()
+
+    # Pull entries
+    entries = [{"payload": normalize(e)} for e in paginate(ENTRIES_PATH, params, headers)]
+    if not entries:
+        print("No rows for window.")
+        return
+
+    # Load into BigQuery RAW
+    client = bigquery.Client(project=PROJECT)
+    job = client.load_table_from_json(entries, RAW_TABLE)
+    job.result()
+    print(f"Loaded {len(entries)} rows into {RAW_TABLE}")
+
+
+if __name__ == "__main__":
+    main()
