@@ -50,31 +50,34 @@ def window_from_env():
 
 # ---------- Headers ----------
 def build_headers():
-    """
-    Priority:
-      1) API Key ID + API Key Secret  -> X-API-KEY-ID / X-API-KEY-SECRET
-      2) API_TOKEN as PAT             -> Authorization: Bearer <token> (if AUTH_STYLE='bearer')
-      3) API_TOKEN as API-KEY         -> X-API-KEY: <token> (AUTH_STYLE='api-key')
-    """
     headers = {"Accept": "application/json"}
 
     if API_KEY_ID and API_KEY_SECRET:
+        # what you already had
         headers["X-API-KEY-ID"] = API_KEY_ID
         headers["X-API-KEY-SECRET"] = API_KEY_SECRET
-    elif API_TOKEN:
+
+        # add both of these — some tenants require one of them
+        headers["X-API-KEY"] = API_KEY_SECRET
+        headers["Authorization"] = f"ApiKey {API_KEY_SECRET}"
+
+    elif API_TOKEN:  # fallback if you ever switch to PAT
         if AUTH_STYLE == "bearer":
             headers["Authorization"] = f"Bearer {API_TOKEN}"
         else:
             headers["X-API-KEY"] = API_TOKEN
     else:
-        fail("Missing Jibble credentials: set JIBBLE_API_KEY_ID and JIBBLE_API_KEY_SECRET "
-             "(or JIBBLE_API_TOKEN with JIBBLE_AUTH_STYLE=api-key|bearer).")
+        fail(
+            "Missing Jibble credentials: set JIBBLE_API_KEY_ID and JIBBLE_API_KEY_SECRET "
+            "(or JIBBLE_API_TOKEN with JIBBLE_AUTH_STYLE=api-key|bearer)."
+        )
 
     if ORG_ID:
         headers["X-Organization-Id"] = ORG_ID
         headers["X-Org-Id"] = ORG_ID
 
     return headers
+
 
 def safe_headers_for_log(h):
     masked = {}
