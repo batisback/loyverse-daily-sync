@@ -46,16 +46,23 @@ jobs:
 
       - name: Sync Jibble
         env:
-          JIBBLE_API_TOKEN: ${{ secrets.JIBBLE_API_TOKEN }}
+          # OAuth client credentials (from your screenshot)
+          JIBBLE_CLIENT_ID: ${{ secrets.JIBBLE_CLIENT_ID }}
+          JIBBLE_CLIENT_SECRET: ${{ secrets.JIBBLE_CLIENT_SECRET }}
+          # Optional: org/workspace id if your tenant requires it (add as a secret if needed)
+          # JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
+
+          # Pull window + BigQuery
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           BQ_DATASET: sbco_ops_jibble
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
+
+          # Base + path confirmed to exist for your tenant
           JIBBLE_API_BASE: https://api.jibble.io/api
           JIBBLE_ENTRIES_PATH: /v1/time-entries
-          JIBBLE_AUTH_STYLE: bearer   # <— try this first
-          # JIBBLE_ORG_ID: 1234567890 # <— if needed
         run: python sync_jibble_attendance.py
+
 
 
       - name: MERGE to final
