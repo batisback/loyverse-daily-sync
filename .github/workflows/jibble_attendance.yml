@@ -51,9 +51,11 @@ jobs:
           BQ_DATASET: sbco_ops_jibble
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
-          # Start with this pair (very often correct):
           JIBBLE_API_BASE: https://api.jibble.io/api
           JIBBLE_ENTRIES_PATH: /v1/time-entries
+          JIBBLE_AUTH_STYLE: api-key
+          # Optional: if your Jibble dashboard shows an Organization ID, set it here (or add as a secret)
+          # JIBBLE_ORG_ID: 1234567890
         run: python sync_jibble_attendance.py
 
       - name: MERGE to final
