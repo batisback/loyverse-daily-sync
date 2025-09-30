@@ -1,8 +1,14 @@
 import os, json, datetime as dt, requests, sys
 from google.cloud import bigquery
 
-API_BASE = os.environ.get("JIBBLE_API_BASE", "https://api.jibble.io")
+API_BASE  = os.environ.get("JIBBLE_API_BASE", "https://api.jibble.io/api")
 ENTRIES_PATH = os.environ.get("JIBBLE_ENTRIES_PATH", "/v1/time-entries")
+
+# Auth style: "api-key" (X-API-KEY header) or "bearer" (Authorization: Bearer ...)
+AUTH_STYLE = os.environ.get("JIBBLE_AUTH_STYLE", "api-key").lower()
+
+JIBBLE_API_TOKEN = os.environ.get("JIBBLE_API_TOKEN", "").strip()
+JIBBLE_ORG_ID    = os.environ.get("JIBBLE_ORG_ID", "").strip()   # optional, if your org requires it
 
 API_BASE = os.environ.get("JIBBLE_API_BASE", "https://api.jibble.io")
 TOKEN = os.environ["JIBBLE_API_TOKEN"]
