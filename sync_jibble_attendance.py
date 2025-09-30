@@ -56,8 +56,7 @@ def window_from_env():
 # ---------- OAuth token (client credentials) ----------
 def get_access_token() -> str:
     if CLIENT_ID and CLIENT_SECRET:
-        # Try several token endpoints commonly used by Jibble tenants
-        base_no_api = API_BASE.replace("/api", "")  # e.g. https://api.jibble.io
+        base_no_api = API_BASE.replace("/api", "")  # e.g., https://api.jibble.io
         candidates = [
             f"{API_BASE}/oauth/token",       # .../api/oauth/token
             f"{API_BASE}/oauth2/token",      # .../api/oauth2/token
@@ -71,7 +70,7 @@ def get_access_token() -> str:
             "client_secret": CLIENT_SECRET,
         }
 
-        last_err = None
+        chosen = None
         for url in candidates:
             try:
                 r = requests.post(url, data=data, timeout=60)
@@ -81,15 +80,13 @@ def get_access_token() -> str:
                 js = r.json()
                 tok = js.get("access_token")
                 if tok:
+                    print("OAuth success via:", url)
                     return tok
                 else:
                     print("OAuth response missing access_token from", url, "body:", js)
             except Exception as e:
-                last_err = e
                 print("OAuth exception for", url, "->", e)
 
-        if last_err:
-            raise last_err
         fail("Could not obtain access_token from any known token endpoint.")
 
     if STATIC_TOKEN:
