@@ -51,7 +51,7 @@ jobs:
           # ✅ Jibble API Key auth (from Jibble > Settings > API Credentials)
           JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
           JIBBLE_API_KEY_SECRET: ${{ secrets.JIBBLE_API_KEY_SECRET }}
-          # Some tenants require this (we found yours): Organization / Workspace ID
+          # Workspace / Organization ID (we found yours)
           JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
 
           # BigQuery + window
@@ -60,9 +60,10 @@ jobs:
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
 
-          # Jibble API routing
+          # Jibble API routing (workspace OData API)
           JIBBLE_API_BASE: https://workspace.prod.jibble.io
-          JIBBLE_ENTRIES_PATH: /v1/time-entries   # change to /v2/time-entries if needed
+          # kept for compatibility; code switches to OData when using workspace host
+          JIBBLE_ENTRIES_PATH: /v1/time-entries
         run: python sync_jibble_attendance.py
 
       - name: MERGE raw → final
