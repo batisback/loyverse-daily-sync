@@ -1,32 +1,67 @@
-import os, json, datetime as dt, requests, sys
+# sync_jibble_attendance.py
+import os
+import sys
+import json
+import datetime as dt
+import requests
 from google.cloud import bigquery
 
-API_BASE  = os.environ.get("JIBBLE_API_BASE", "https://api.jibble.io/api")
-ENTRIES_PATH = os.environ.get("JIBBLE_ENTRIES_PATH", "/v1/time-entries")
+# ========= Config via ENV (with safe defaults) =========
+# You can change these from the GitHub Actions workflow env without editing this file.
 
-# Auth style: "api-key" (X-API-KEY header) or "bearer" (Authorization: Bearer ...)
-AUTH_STYLE = os.environ.get("JIBBLE_AUTH_STYLE", "api-key").lower()
+API_BASE = os.environ.get("JIBBLE_API_BASE", "https://api.jibble.io/api").rstrip("/")
+ENTRIES_PATH = os.environ.get("JIBBLE_ENTRIES_PATH", "/v1/time-entries")  # try /v2/time-entries or /v1/time-tracking/time-entries if needed
 
+# Auth style: "api-key" (X-API-KEY: <key>) OR "bearer" (Authorization: Bearer <key>)
+AUTH_STYLE = os.environ.get("JIBBLE_AUTH_STYLE", "api-key").strip().lower()
 JIBBLE_API_TOKEN = os.environ.get("JIBBLE_API_TOKEN", "").strip()
-JIBBLE_ORG_ID    = os.environ.get("JIBBLE_ORG_ID", "").strip()   # optional, if your org requires it
+JIBBLE_ORG_ID = os.environ.get("JIBBLE_ORG_ID", "").strip()  # optional
 
-API_BASE = os.environ.get("JIBBLE_API_BASE", "https://api.jibble.io")
-TOKEN = os.environ["JIBBLE_API_TOKEN"]
-HEADERS = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/json"}
+# GCP / BigQuery
+PROJECT = os.environ.get("GCP_PROJECT", "").strip()
+DATASET = os.environ.get("BQ_DATASET", "").strip()  # e.g., sbco_ops_jibble
+RAW_TABLE = f"{PROJECT}.{DATASET}.jibble_raw_attendance" if PROJECT and DATASET else None
 
-PROJECT = os.environ["GCP_PROJECT"]
-DATASET = os.environ["BQ_DATASET"]  # set to sbco_ops_jibble in workflow
-RAW_TABLE = f"{PROJECT}.{DATASET}.jibble_raw_attendance"
-TZ = dt.timezone(dt.timedelta(hours=8))  # Asia/Manila
+# Timezone: Asia/Manila
+TZ = dt.timezone(dt.timedelta(hours=8))
 
-def parse_date(s):
+# ========= Helpers =========
+
+def build_headers():
+    """Build API headers based on AUTH_STYLE and optional org id."""
+    if not JIBBLE_API_TOKEN:
+        _fail("Missing env var JIBBLE_API_TOKEN")
+
+    headers = {"Accept": "application/json"}
+    if AUTH_STYLE == "api-key":
+        headers["X-API-KEY"] = JIBBLE_API_TOKEN
+    else:
+        headers["Authorization"] = f"Bearer {JIBBLE_API_TOKEN}"
+
+    # If your org requires it, include org id headers (harmless if unused)
+    if JIBBLE_ORG_ID:
+        headers["X-Organization-Id"] = JIBBLE_ORG_ID
+        headers["X-Org-Id"] = JIBBLE_ORG_ID
+
+    return headers
+
+
+def _fail(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+
+def parse_date(s: str) -> dt.date:
     return dt.datetime.strptime(s, "%Y-%m-%d").date()
 
+
 def window_from_env():
+    """Use START_DATE/END_DATE (YYYY-MM-DD) if provided, else yesterday (PH)."""
     sd = os.getenv("START_DATE")
     ed = os.getenv("END_DATE")
     if sd and ed:
-        s = parse_date(sd); e = parse_date(ed)
+        s = parse_date(sd)
+        e = parse_date(ed)
     else:
         y = (dt.datetime.now(TZ).date() - dt.timedelta(days=1))
         s = e = y
@@ -35,69 +70,39 @@ def window_from_env():
         dt.datetime.combine(e, dt.time.max, TZ),
     )
 
-def fetch(path, params):
-    url = f"{API_BASE}{path}"
-    r = requests.get(url, headers=HEADERS, params=params, timeout=60)
-    if r.status_code >= 400:
-        print("Jibble API error:", r.status_code, "URL:", r.url)
-        print("Body:", r.text[:800])
-    r.raise_for_status()
-    return r.json()
 
-def paginate(path, params, data_key="data"):
+def fetch(path, params, headers):
+    url = f"{API_BASE}{path}"
+    r = requests.get(url, headers=headers, params=params, timeout=60)
+
+    if r.status_code >= 400:
+        # Mask sensitive headers in logs
+        safe_headers = {}
+        for k, v in headers.items():
+            if k.lower() in ("authorization", "x-api-key"):
+                safe_headers[k] = "***"
+            else:
+                safe_headers[k] = v
+        print("Jibble API error:", r.status_code)
+        print("URL:", r.url)
+        print("Sent headers:", safe_headers)
+        print("Body:", r.text[:800])
+
+    r.raise_for_status()
+    # Jibble may return a list or a dict
+    try:
+        return r.json()
+    except Exception:
+        _fail("Failed to parse JSON response from Jibble")
+
+
+def paginate(path, params, headers, data_key="data"):
+    """Yield items across pages. Works if API returns list or {data: [], nextPage: ...}."""
     page = 1
     while True:
-        p = dict(params); p.update({"page": page, "limit": 200})
-        js = fetch(path, p)
-        items = js.get(data_key, js if isinstance(js, list) else [])
-        if not items: break
-        for it in items: yield it
-        if len(items) < p["limit"] or not js.get("nextPage"): break
-        page += 1
+        p = dict(params)
+        p.update({"page": page, "limit": 200})
+        js = fetch(path, p, headers)
 
-def iso_date(ts_iso): return ts_iso[:10] if ts_iso else None
-def iso_time(ts_iso):
-    if not ts_iso: return None
-    try: return ts_iso.split("T")[1][:8]
-    except Exception: return None
-def sec_to_hms(sec):
-    if sec is None: return None
-    sec = int(sec); h = sec//3600; m = (sec%3600)//60; s = sec%60
-    return f"{h:02d}:{m:02d}:{s:02d}"
-
-def normalize(entry):
-    # Adjust these keys if your Jibble API uses different names
-    start = entry.get("startedAt") or entry.get("startAt")
-    end   = entry.get("endedAt")  or entry.get("endAt")
-    time_iso = start or end
-    return {
-        "Date": iso_date(time_iso),
-        "Full Name": (entry.get("person") or {}).get("name"),
-        "Group": ((entry.get("group") or {}).get("name")) or None,
-        "EntryType": entry.get("type") or entry.get("entryType"),
-        "Time": iso_time(time_iso),
-        "Duration": sec_to_hms(entry.get("durationSeconds")) if entry.get("durationSeconds") is not None else None,
-        "Activity": (entry.get("activity") or {}).get("name"),
-        "Kiosk Name": (entry.get("kiosk") or {}).get("name"),
-        "Created On": entry.get("createdAt"),
-        "Last Edited On": entry.get("updatedAt") or entry.get("lastEditedOn"),
-    }
-
-def main():
-    date_from, date_to = window_from_env()
-    params = {"from": date_from.isoformat(), "to": date_to.isoformat()}
-    # Endpoint path may differ in your account; adjust if needed
-    entries = [{"payload": normalize(e)} for e in paginate(ENTRIES_PATH, params)]
-
-    if not entries:
-        print("No rows for window."); return
-    client = bigquery.Client(project=PROJECT)
-    job = client.load_table_from_json(entries, RAW_TABLE)
-    job.result()
-    print(f"Loaded {len(entries)} rows into {RAW_TABLE}")
-
-if __name__ == "__main__":
-    if not TOKEN or not PROJECT or not DATASET:
-        print("Missing env vars JIBBLE_API_TOKEN / GCP_PROJECT / BQ_DATASET", file=sys.stderr)
-        sys.exit(1)
-    main()
+        # Normalize items
+        if isinstance(js, list):
