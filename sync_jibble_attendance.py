@@ -5,6 +5,8 @@ import datetime as dt
 import requests
 from urllib.parse import urlencode
 from google.cloud import bigquery
+import base64
+
 
 # ========= Config via ENV =========
 API_BASE = os.environ.get("JIBBLE_API_BASE", "https://api.jibble.io/api").rstrip("/")
