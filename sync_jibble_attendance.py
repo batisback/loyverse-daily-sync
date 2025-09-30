@@ -54,9 +54,17 @@ def window_from_env():
 
 
 # ---------- OAuth token (client credentials) ----------
+from urllib.parse import urlsplit, urlunsplit
+
+def _strip_trailing_api(url: str) -> str:
+    u = url.rstrip("/")
+    if u.endswith("/api"):
+        return u[:-4]  # remove the trailing "/api"
+    return u
+
 def get_access_token() -> str:
     if CLIENT_ID and CLIENT_SECRET:
-        base_no_api = API_BASE.replace("/api", "")  # e.g., https://api.jibble.io
+        base_no_api = _strip_trailing_api(API_BASE)  # e.g., https://api.jibble.io
         candidates = [
             f"{API_BASE}/oauth/token",       # .../api/oauth/token
             f"{API_BASE}/oauth2/token",      # .../api/oauth2/token
@@ -70,7 +78,6 @@ def get_access_token() -> str:
             "client_secret": CLIENT_SECRET,
         }
 
-        chosen = None
         for url in candidates:
             try:
                 r = requests.post(url, data=data, timeout=60)
@@ -93,6 +100,7 @@ def get_access_token() -> str:
         return STATIC_TOKEN
 
     fail("Missing credentials: set JIBBLE_CLIENT_ID / JIBBLE_CLIENT_SECRET (or JIBBLE_API_TOKEN).")
+
 
 
 
