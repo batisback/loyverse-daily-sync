@@ -2,14 +2,15 @@ name: Jibble Attendance Daily
 
 on:
   schedule:
-    - cron: "0 0 * * *"   # 00:00 UTC = 08:00 PH daily
+    # Runs at 00:00 UTC, which is 8:00 AM in the Philippines (PH)
+    - cron: "0 0 * * *"
   workflow_dispatch:
     inputs:
       start_date:
-        description: "YYYY-MM-DD (optional)"
+        description: "Start Date (YYYY-MM-DD, optional, defaults to yesterday)"
         required: false
       end_date:
-        description: "YYYY-MM-DD (optional)"
+        description: "End Date (YYYY-MM-DD, optional, defaults to yesterday)"
         required: false
 
 concurrency:
@@ -19,9 +20,12 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -29,130 +33,40 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      # gcloud CLI so we can use bq
-      - name: Setup gcloud (CLI only)
-        uses: google-github-actions/setup-gcloud@v2
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: 'google-github-actions/auth@v2'
         with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          credentials_json: '${{ secrets.GCP_KEY_B64 }}'
+          project_id: '${{ secrets.GCP_PROJECT_ID }}'
 
-      - name: Authenticate gcloud with base64 key
-        shell: bash
-        run: |
-          echo "${{ secrets.GCP_KEY_B64 }}" | base64 -d > "${HOME}/gcp.json"
-          gcloud auth activate-service-account --key-file="${HOME}/gcp.json"
-          gcloud config set project "${{ secrets.GCP_PROJECT_ID }}"
-
-      # --- Probe Jibble OData for a known day (sanitized & verbose) ---
-      - name: Probe Jibble OData (try /odata and flat routes + auth variants)
-        shell: bash
-        env:
-          JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
-          JIBBLE_API_KEY_SECRET: ${{ secrets.JIBBLE_API_KEY_SECRET }}
-          JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
-        run: |
-          # No 'set -euo' so we always see output
-          DAY="2025-09-28"   # <-- change to a date with known punches
-          FROM="${DAY}T00:00:00+08:00"
-          TO="${DAY}T23:59:59+08:00"
-
-          base="https://workspace.prod.jibble.io"
-
-          raw_org="${JIBBLE_ORG_ID}"
-          ORG="$(printf '%s' "${raw_org}" | tr -d '\r\n' | sed -e 's/^ *//' -e 's/ *$//' -e 's/^\"//' -e 's/\"$//')"
-          id="$(printf '%s' "${JIBBLE_API_KEY_ID}"     | tr -d '\r\n')"
-          secret="$(printf '%s' "${JIBBLE_API_KEY_SECRET}" | tr -d '\r\n')"
-
-          # Basic auth
-          if base64 --help 2>&1 | grep -q -- "-w"; then
-            basic=$(printf "%s" "${id}:${secret}" | base64 -w0)
-          else
-            basic=$(printf "%s" "${id}:${secret}" | base64)
-          fi
-
-          echo "== ORG sanity =="
-          printf 'ORG=[%s] len=%s\n' "${ORG}" "${#ORG}"
-          printf 'ORG hex: '; printf '%s' "${ORG}" | od -An -tx1 | head -n1; echo
-
-          probe() {
-            label="$1"; url="$2"; auth_style="$3"
-            echo "---- ${label} ----"
-            case "$auth_style" in
-              basic)
-                auth_header="Authorization: Basic ${basic}"
-                extra_headers=()
-                ;;
-              apikey)
-                auth_header="Authorization: ApiKey ${secret}"
-                extra_headers=()
-                ;;
-              xkey)
-                auth_header="" # no Authorization
-                extra_headers=(-H "X-API-KEY-ID: ${id}" -H "X-API-KEY-SECRET: ${secret}" -H "X-Organization-Id: ${ORG}")
-                ;;
-            esac
-
-            # Build GET with -G for query params only if we detect '?$' marker
-            if echo "$url" | grep -q "__QS__"; then
-              baseurl="${url%%__QS__*}"
-              qs="${url#*__QS__}"
-              # qs contains a raw $filter etc.; use --data-urlencode lines:
-              code=$(curl -sS -i -G "$baseurl" \
-                --data-urlencode "$qs" \
-                -H "Accept: application/json" \
-                -H "OData-Version: 4.0" \
-                ${auth_header:+-H "$auth_header"} \
-                "${extra_headers[@]}" \
-                | tee /tmp/resp.txt | sed -n '1p' )
-            else
-              code=$(curl -sS -i "$url" \
-                -H "Accept: application/json" \
-                -H "OData-Version: 4.0" \
-                ${auth_header:+-H "$auth_header"} \
-                "${extra_headers[@]}" \
-                | tee /tmp/resp.txt | sed -n '1p' )
-            fi
-            # Print first 60 lines
-            head -n 60 /tmp/resp.txt
-            echo
-          }
-
-          # 1) OData with /odata/v1 (slash org)
-          probe "odata org (basic)"  "${base}/odata/v1/Organizations/${ORG}"                  basic
-          probe "odata org (apikey)" "${base}/odata/v1/Organizations/${ORG}"                  apikey
-          probe "odata org (x-keys)" "${base}/odata/v1/Organizations/${ORG}"                  xkey
-
-          # 2) OData TimeEntries collection under org
-          probe "odata TimeEntries (basic)"  "${base}/odata/v1/Organizations/${ORG}/TimeEntries__QS__\$filter=startedAt ge ${FROM} and startedAt le ${TO}&\$orderby=startedAt asc&\$top=5&\$format=json" basic
-          probe "odata TimeEntries (apikey)" "${base}/odata/v1/Organizations/${ORG}/TimeEntries__QS__\$filter=startedAt ge ${FROM} and startedAt le ${TO}&\$orderby=startedAt asc&\$top=5&\$format=json" apikey
-          probe "odata TimeEntries (x-keys)" "${base}/odata/v1/Organizations/${ORG}/TimeEntries__QS__\$filter=startedAt ge ${FROM} and startedAt le ${TO}&\$orderby=startedAt asc&\$top=5&\$format=json" xkey
-
-          # 3) Flat collection (no org in path) - some tenants expose this
-          probe "flat v1 TimeEntries (basic)"  "${base}/v1/TimeEntries__QS__\$filter=startedAt ge ${FROM} and startedAt le ${TO}&\$orderby=startedAt asc&\$top=5&\$format=json" basic
-          probe "flat v1 TimeEntries (apikey)" "${base}/v1/TimeEntries__QS__\$filter=startedAt ge ${FROM} and startedAt le ${TO}&\$orderby=startedAt asc&\$top=5&\$format=json" apikey
-          probe "flat v1 TimeEntries (x-keys)" "${base}/v1/TimeEntries__QS__\$filter=startedAt ge ${FROM} and startedAt le ${TO}&\$orderby=startedAt asc&\$top=5&\$format=json" xkey
-
+      - name: Setup gcloud CLI
+        # This is needed for the 'bq' command-line tool used in the final step
+        uses: google-github-actions/setup-gcloud@v2
 
       # ---- Jibble → BigQuery ----
-      - name: Sync Jibble Attendance to BigQuery (raw)
+      - name: Sync Jibble Attendance to BigQuery
         env:
-          # Jibble auth + org
+          # Jibble API credentials and Organization ID from GitHub Secrets
           JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
           JIBBLE_API_KEY_SECRET: ${{ secrets.JIBBLE_API_KEY_SECRET }}
           JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
 
-          # BigQuery + window
+          # Google Cloud and BigQuery configuration
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          BQ_DATASET: sbco_ops_jibble
+          BQ_DATASET: sbco_ops_jibble # IMPORTANT: Ensure this dataset exists in your BigQuery project
+          
+          # Date window for the sync, taken from manual trigger inputs if provided
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
 
-          # Workspace API host (script auto-switches to OData)
+          # This is the corrected Jibble REST API endpoint. The script will use this.
           JIBBLE_API_BASE: https://api.jibble.io/api
           JIBBLE_ENTRIES_PATH: /v1/time-entries
         run: python sync_jibble_attendance.py
 
-      - name: MERGE raw → final
+      - name: MERGE raw data into final table
         run: bq query --quiet --use_legacy_sql=false < merge_final.sql
