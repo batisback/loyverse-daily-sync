@@ -46,15 +46,16 @@ jobs:
           gcloud config set project "${{ secrets.GCP_PROJECT_ID }}"
 
       # --- Probe Jibble OData for known day ---
-      - name: Probe Jibble OData (show status + body, try auth variants)
+      - name: Probe Jibble OData (clean URL + show status/body)
         shell: bash
         env:
           JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
           JIBBLE_API_KEY_SECRET: ${{ secrets.JIBBLE_API_KEY_SECRET }}
           JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
         run: |
-          set -euo pipefail
-          DAY="2025-09-28"   # <-- change to a date that definitely has punches
+          # Intentionally NOT using 'set -euo' so we always see output
+
+          DAY="2025-09-28"   # <-- change to a day you know has punches
           FROM="${DAY}T00:00:00+08:00"
           TO="${DAY}T23:59:59+08:00"
 
@@ -62,45 +63,83 @@ jobs:
           org="${JIBBLE_ORG_ID}"
           id="${JIBBLE_API_KEY_ID}"
           secret="${JIBBLE_API_KEY_SECRET}"
-          basic=$(printf "%s" "${id}:${secret}" | base64)
 
-          probe() {
-            label="$1"; field="$2"; auth_hdr="$3"
-            echo "---- ${label} (${field}) ----"
-            code=$(curl -sS -G "${base}/v1/Organizations/${org}/TimeEntries" \
-              --data-urlencode "\$filter=${field} ge ${FROM} and ${field} le ${TO}" \
-              --data-urlencode "\$orderby=${field} asc" \
-              --data-urlencode "\$top=5" \
-              --data-urlencode "\$format=json" \
-              -H "Accept: application/json" \
-              -H "OData-Version: 4.0" \
-              -H "X-Organization-Id: ${org}" \
-              -H "${auth_hdr}" \
-              -o /tmp/body.json -w "%{http_code}") || true
-            echo "HTTP ${code}"
-            head -c 800 /tmp/body.json; echo
-            echo
-          }
+          # base64 for Basic auth (portable)
+          if base64 --help 2>&1 | grep -q -- "-w"; then
+            basic=$(printf "%s" "${id}:${secret}" | base64 -w0)
+          else
+            basic=$(printf "%s" "${id}:${secret}" | base64)
+          fi
 
-          # Also probe the organization object itself to confirm auth
-          echo "---- org probe (Basic) ----"
-          code=$(curl -sS "${base}/v1/Organizations/${org}" \
+          echo "== ORG PROBE (Basic) =="
+          echo "URL: ${base}/v1/Organizations/${org}"
+          curl -sS -i "${base}/v1/Organizations/${org}" \
             -H "Accept: application/json" \
             -H "OData-Version: 4.0" \
             -H "Authorization: Basic ${basic}" \
             -H "X-Organization-Id: ${org}" \
-            -o /tmp/org.json -w "%{http_code}") || true
-          echo "HTTP ${code}"
-          head -c 800 /tmp/org.json; echo; echo
+            | head -n 40
+          echo
+          echo "---------------------------------------"
+          echo
 
-          # Try time entries with two timestamp fields and two auth styles
-          probe "startedAt + Basic" "startedAt" "Authorization: Basic ${basic}"
-          probe "startAt  + Basic" "startAt"  "Authorization: Basic ${basic}"
+          echo "== TIME ENTRIES (startedAt + Basic) =="
+          curl -sS -i -G "${base}/v1/Organizations/${org}/TimeEntries" \
+            --data-urlencode "\$filter=startedAt ge ${FROM} and startedAt le ${TO}" \
+            --data-urlencode "\$orderby=startedAt asc" \
+            --data-urlencode "\$top=5" \
+            --data-urlencode "\$format=json" \
+            -H "Accept: application/json" \
+            -H "OData-Version: 4.0" \
+            -H "Authorization: Basic ${basic}" \
+            -H "X-Organization-Id: ${org}" \
+            | head -n 60
+          echo
+          echo "---------------------------------------"
+          echo
 
-          # Some tenants prefer ApiKey instead of Basic on workspace:
-          probe "startedAt + ApiKey" "startedAt" "Authorization: ApiKey ${secret}"
-          probe "startAt  + ApiKey" "startAt"  "Authorization: ApiKey ${secret}"
+          echo "== TIME ENTRIES (startAt + Basic) =="
+          curl -sS -i -G "${base}/v1/Organizations/${org}/TimeEntries" \
+            --data-urlencode "\$filter=startAt ge ${FROM} and startAt le ${TO}" \
+            --data-urlencode "\$orderby=startAt asc" \
+            --data-urlencode "\$top=5" \
+            --data-urlencode "\$format=json" \
+            -H "Accept: application/json" \
+            -H "OData-Version: 4.0" \
+            -H "Authorization: Basic ${basic}" \
+            -H "X-Organization-Id: ${org}" \
+            | head -n 60
+          echo
+          echo "---------------------------------------"
+          echo
 
+          echo "== TIME ENTRIES (startedAt + ApiKey) =="
+          curl -sS -i -G "${base}/v1/Organizations/${org}/TimeEntries" \
+            --data-urlencode "\$filter=startedAt ge ${FROM} and startedAt le ${TO}" \
+            --data-urlencode "\$orderby=startedAt asc" \
+            --data-urlencode "\$top=5" \
+            --data-urlencode "\$format=json" \
+            -H "Accept: application/json" \
+            -H "OData-Version: 4.0" \
+            -H "Authorization: ApiKey ${secret}" \
+            -H "X-Organization-Id: ${org}" \
+            | head -n 60
+          echo
+          echo "---------------------------------------"
+          echo
+
+          echo "== TIME ENTRIES (startAt + ApiKey) =="
+          curl -sS -i -G "${base}/v1/Organizations/${org}/TimeEntries" \
+            --data-urlencode "\$filter=startAt ge ${FROM} and startAt le ${TO}" \
+            --data-urlencode "\$orderby=startAt asc" \
+            --data-urlencode "\$top=5" \
+            --data-urlencode "\$format=json" \
+            -H "Accept: application/json" \
+            -H "OData-Version: 4.0" \
+            -H "Authorization: ApiKey ${secret}" \
+            -H "X-Organization-Id: ${org}" \
+            | head -n 60
+          echo
 
       # ---- Jibble → BigQuery ----
       - name: Sync Jibble Attendance to BigQuery (raw)
