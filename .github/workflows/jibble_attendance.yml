@@ -45,25 +45,62 @@ jobs:
           gcloud auth activate-service-account --key-file="${HOME}/gcp.json"
           gcloud config set project "${{ secrets.GCP_PROJECT_ID }}"
 
+      # --- Probe Jibble OData for known day ---
+      - name: Probe Jibble OData for a known day
+        shell: bash
+        env:
+          JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
+          JIBBLE_API_KEY_SECRET: ${{ secrets.JIBBLE_API_KEY_SECRET }}
+          JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
+        run: |
+          set -e
+          DAY="2025-09-28"   # << change this to a day you know has punches
+          FROM="${DAY}T00:00:00+08:00"
+          TO="${DAY}T23:59:59+08:00"
+
+          base="https://workspace.prod.jibble.io"
+          org="${JIBBLE_ORG_ID}"
+          id="${JIBBLE_API_KEY_ID}"
+          secret="${JIBBLE_API_KEY_SECRET}"
+          basic=$(printf "%s" "${id}:${secret}" | base64)
+
+          probe() {
+            name="$1"
+            url="$2"
+            echo "---- ${name} ----"
+            echo "GET $url"
+            curl -sS "$url" \
+              -H "Accept: application/json" \
+              -H "OData-Version: 4.0" \
+              -H "Authorization: Basic ${basic}" \
+              -H "X-Organization-Id: ${org}" \
+              -D /tmp/h.txt | head -c 600 || true
+            echo
+            head -n 1 /tmp/h.txt || true
+            echo
+          }
+
+          # Try BOTH common timestamp fields and path styles
+          probe "slash-startedAt" \
+            "${base}/v1/Organizations/${org}/TimeEntries?\$filter=startedAt ge ${FROM} and startedAt le ${TO}&\$top=5&\$format=json"
+
+          probe "slash-startAt" \
+            "${base}/v1/Organizations/${org}/TimeEntries?\$filter=startAt ge ${FROM} and startAt le ${TO}&\$top=5&\$format=json"
+
       # ---- Jibble → BigQuery ----
       - name: Sync Jibble Attendance to BigQuery (raw)
         env:
-          # ✅ Jibble API Key auth (from Jibble > Settings > API Credentials)
           JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
           JIBBLE_API_KEY_SECRET: ${{ secrets.JIBBLE_API_KEY_SECRET }}
-          # Workspace / Organization ID (we found yours)
           JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
 
-          # BigQuery + window
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           BQ_DATASET: sbco_ops_jibble
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
 
-          # Jibble API routing (workspace OData API)
           JIBBLE_API_BASE: https://workspace.prod.jibble.io
-          # kept for compatibility; code switches to OData when using workspace host
-          JIBBLE_ENTRIES_PATH: /v1/time-entries
+          JIBBLE_ENTRIES_PATH: /v1/time-entries   # placeholder; script auto-switches when workspace API detected
         run: python sync_jibble_attendance.py
 
       - name: MERGE raw → final
