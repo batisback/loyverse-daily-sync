@@ -45,101 +45,102 @@ jobs:
           gcloud auth activate-service-account --key-file="${HOME}/gcp.json"
           gcloud config set project "${{ secrets.GCP_PROJECT_ID }}"
 
-      # --- Probe Jibble OData for known day ---
-- name: Probe Jibble OData (sanitize org id + show status/body)
-  shell: bash
-  env:
-    JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
-    JIBBLE_API_KEY_SECRET: ${{ secrets.JIBBLE_API_KEY_SECRET }}
-    JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
-  run: |
-    # DO NOT 'set -e' so we can see output even if curl fails
-
-    DAY="2025-09-28"   # <-- change to a day you know has punches
-    FROM="${DAY}T00:00:00+08:00"
-    TO="${DAY}T23:59:59+08:00"
-
-    base="https://workspace.prod.jibble.io"
-
-    # --- Sanitize secrets (strip CR/LF and outer quotes/spaces) ---
-    raw_org="${JIBBLE_ORG_ID}"
-    ORG="$(printf '%s' "${raw_org}" | tr -d '\r\n' | sed -e 's/^ *//' -e 's/ *$//' -e 's/^"//' -e 's/"$//')"
-
-    id="$(printf '%s' "${JIBBLE_API_KEY_ID}"     | tr -d '\r\n')"
-    secret="$(printf '%s' "${JIBBLE_API_KEY_SECRET}" | tr -d '\r\n')"
-
-    # Basic auth header (portable base64)
-    if base64 --help 2>&1 | grep -q -- "-w"; then
-      basic=$(printf "%s" "${id}:${secret}" | base64 -w0)
-    else
-      basic=$(printf "%s" "${id}:${secret}" | base64)
-    fi
-
-    echo "== SANITY =="
-    printf 'raw_org=[%s]\n' "${raw_org}"
-    printf 'ORG=[%s]\n' "${ORG}"
-    printf 'ORG length=%s\n' "${#ORG}"
-    printf 'ORG bytes (hex): '
-    printf '%s' "${ORG}" | od -An -tx1 | head -n1
-    echo
-
-    url_org="${base}/v1/Organizations/${ORG}"
-    echo "== ORG PROBE (Basic) =="
-    echo "URL: ${url_org}"
-    curl -sS -i "${url_org}" \
-      -H "Accept: application/json" \
-      -H "OData-Version: 4.0" \
-      -H "Authorization: Basic ${basic}" \
-      -H "X-Organization-Id: ${ORG}" \
-      | head -n 40
-    echo
-    echo "---------------------------------------"
-    echo
-
-    echo "== TIME ENTRIES (startedAt + Basic) =="
-    curl -sS -i -G "${base}/v1/Organizations/${ORG}/TimeEntries" \
-      --data-urlencode "\$filter=startedAt ge ${FROM} and startedAt le ${TO}" \
-      --data-urlencode "\$orderby=startedAt asc" \
-      --data-urlencode "\$top=5" \
-      --data-urlencode "\$format=json" \
-      -H "Accept: application/json" \
-      -H "OData-Version: 4.0" \
-      -H "Authorization: Basic ${basic}" \
-      -H "X-Organization-Id: ${ORG}" \
-      | head -n 60
-    echo
-    echo "---------------------------------------"
-    echo
-
-    echo "== TIME ENTRIES (startAt + Basic) =="
-    curl -sS -i -G "${base}/v1/Organizations/${ORG}/TimeEntries" \
-      --data-urlencode "\$filter=startAt ge ${FROM} and startAt le ${TO}" \
-      --data-urlencode "\$orderby=startAt asc" \
-      --data-urlencode "\$top=5" \
-      --data-urlencode "\$format=json" \
-      -H "Accept: application/json" \
-      -H "OData-Version: 4.0" \
-      -H "Authorization: Basic ${basic}" \
-      -H "X-Organization-Id: ${ORG}" \
-      | head -n 60
-    echo
-
-
-
-      # ---- Jibble → BigQuery ----
-      - name: Sync Jibble Attendance to BigQuery (raw)
+      # --- Probe Jibble OData for a known day (sanitized & verbose) ---
+      - name: Probe Jibble OData (sanitize org id + show status/body)
+        shell: bash
         env:
           JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
           JIBBLE_API_KEY_SECRET: ${{ secrets.JIBBLE_API_KEY_SECRET }}
           JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
+        run: |
+          # Intentionally NOT using 'set -euo' so we always see output
 
+          DAY="2025-09-28"   # <-- change to a day you know has punches
+          FROM="${DAY}T00:00:00+08:00"
+          TO="${DAY}T23:59:59+08:00"
+
+          base="https://workspace.prod.jibble.io"
+
+          # --- Sanitize secrets (strip CR/LF and outer quotes/spaces) ---
+          raw_org="${JIBBLE_ORG_ID}"
+          ORG="$(printf '%s' "${raw_org}" | tr -d '\r\n' | sed -e 's/^ *//' -e 's/ *$//' -e 's/^\"//' -e 's/\"$//')"
+
+          id="$(printf '%s' "${JIBBLE_API_KEY_ID}"       | tr -d '\r\n')"
+          secret="$(printf '%s' "${JIBBLE_API_KEY_SECRET}" | tr -d '\r\n')"
+
+          # Basic auth header (portable base64)
+          if base64 --help 2>&1 | grep -q -- "-w"; then
+            basic=$(printf "%s" "${id}:${secret}" | base64 -w0)
+          else
+            basic=$(printf "%s" "${id}:${secret}" | base64)
+          fi
+
+          echo "== SANITY =="
+          printf 'raw_org=[%s]\n' "${raw_org}"
+          printf 'ORG=[%s]\n' "${ORG}"
+          printf 'ORG length=%s\n' "${#ORG}"
+          printf 'ORG bytes (hex): '
+          printf '%s' "${ORG}" | od -An -tx1 | head -n1
+          echo
+
+          url_org="${base}/v1/Organizations/${ORG}"
+          echo "== ORG PROBE (Basic) =="
+          echo "URL: ${url_org}"
+          curl -sS -i "${url_org}" \
+            -H "Accept: application/json" \
+            -H "OData-Version: 4.0" \
+            -H "Authorization: Basic ${basic}" \
+            -H "X-Organization-Id: ${ORG}" \
+            | head -n 40
+          echo
+          echo "---------------------------------------"
+          echo
+
+          echo "== TIME ENTRIES (startedAt + Basic) =="
+          curl -sS -i -G "${base}/v1/Organizations/${ORG}/TimeEntries" \
+            --data-urlencode "\$filter=startedAt ge ${FROM} and startedAt le ${TO}" \
+            --data-urlencode "\$orderby=startedAt asc" \
+            --data-urlencode "\$top=5" \
+            --data-urlencode "\$format=json" \
+            -H "Accept: application/json" \
+            -H "OData-Version: 4.0" \
+            -H "Authorization: Basic ${basic}" \
+            -H "X-Organization-Id: ${ORG}" \
+            | head -n 60
+          echo
+          echo "---------------------------------------"
+          echo
+
+          echo "== TIME ENTRIES (startAt + Basic) =="
+          curl -sS -i -G "${base}/v1/Organizations/${ORG}/TimeEntries" \
+            --data-urlencode "\$filter=startAt ge ${FROM} and startAt le ${TO}" \
+            --data-urlencode "\$orderby=startAt asc" \
+            --data-urlencode "\$top=5" \
+            --data-urlencode "\$format=json" \
+            -H "Accept: application/json" \
+            -H "OData-Version: 4.0" \
+            -H "Authorization: Basic ${basic}" \
+            -H "X-Organization-Id: ${ORG}" \
+            | head -n 60
+          echo
+
+      # ---- Jibble → BigQuery ----
+      - name: Sync Jibble Attendance to BigQuery (raw)
+        env:
+          # Jibble auth + org
+          JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
+          JIBBLE_API_KEY_SECRET: ${{ secrets.JIBBLE_API_KEY_SECRET }}
+          JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
+
+          # BigQuery + window
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           BQ_DATASET: sbco_ops_jibble
           START_DATE: ${{ github.event.inputs.start_date }}
           END_DATE: ${{ github.event.inputs.end_date }}
 
+          # Workspace API host (script auto-switches to OData)
           JIBBLE_API_BASE: https://workspace.prod.jibble.io
-          JIBBLE_ENTRIES_PATH: /v1/time-entries   # placeholder; script auto-switches when workspace API detected
+          JIBBLE_ENTRIES_PATH: /v1/time-entries
         run: python sync_jibble_attendance.py
 
       - name: MERGE raw → final
