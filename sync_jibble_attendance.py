@@ -56,11 +56,12 @@ def build_headers():
     if not (API_KEY_ID and API_KEY_SECRET):
         fail("Missing Jibble credentials: set JIBBLE_API_KEY_ID and JIBBLE_API_KEY_SECRET.")
 
-    # These are the primary headers for the standard REST API
+    # Standard REST API headers. The key change is adding the 'Authorization' header.
     headers = {
         "Accept": "application/json",
         "X-API-KEY-ID": API_KEY_ID,
         "X-API-KEY-SECRET": API_KEY_SECRET,
+        "Authorization": f"ApiKey {API_KEY_SECRET}" # <-- This is the required fix
     }
 
     # The OData (workspace) API uses Basic Auth instead, so we switch if needed
@@ -191,7 +192,7 @@ def main():
         gen = paginate_rest_time_entries(ENTRIES_PATH, date_from, date_to, headers)
 
     # --- Normalize + load into BQ ---
-    # The BigQuery client requires a list of dicts.
+    # The BigQuery client requires a list of dicts. We convert the generator to a list.
     entries = [{"json": e} for e in gen]
     
     if not entries:
@@ -220,3 +221,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
