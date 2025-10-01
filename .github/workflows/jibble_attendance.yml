@@ -46,15 +46,15 @@ jobs:
           gcloud config set project "${{ secrets.GCP_PROJECT_ID }}"
 
       # --- Probe Jibble OData for known day ---
-      - name: Probe Jibble OData for a known day (safe-encoded)
+      - name: Probe Jibble OData (show status + body, try auth variants)
         shell: bash
         env:
           JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
           JIBBLE_API_KEY_SECRET: ${{ secrets.JIBBLE_API_KEY_SECRET }}
           JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
         run: |
-          set -e
-          DAY="2025-09-28"   # <-- change to a day you know has punches
+          set -euo pipefail
+          DAY="2025-09-28"   # <-- change to a date that definitely has punches
           FROM="${DAY}T00:00:00+08:00"
           TO="${DAY}T23:59:59+08:00"
 
@@ -65,26 +65,42 @@ jobs:
           basic=$(printf "%s" "${id}:${secret}" | base64)
 
           probe() {
-            name="$1"
-            field="$2"
-            echo "---- ${name} (${field}) ----"
-            echo "GET ${base}/v1/Organizations/${org}/TimeEntries"
-            curl -sS -G "${base}/v1/Organizations/${org}/TimeEntries" \
+            label="$1"; field="$2"; auth_hdr="$3"
+            echo "---- ${label} (${field}) ----"
+            code=$(curl -sS -G "${base}/v1/Organizations/${org}/TimeEntries" \
               --data-urlencode "\$filter=${field} ge ${FROM} and ${field} le ${TO}" \
+              --data-urlencode "\$orderby=${field} asc" \
               --data-urlencode "\$top=5" \
               --data-urlencode "\$format=json" \
               -H "Accept: application/json" \
               -H "OData-Version: 4.0" \
-              -H "Authorization: Basic ${basic}" \
               -H "X-Organization-Id: ${org}" \
-              -D /tmp/h.txt | head -c 800 || true
-            echo
-            head -n 1 /tmp/h.txt || true
+              -H "${auth_hdr}" \
+              -o /tmp/body.json -w "%{http_code}") || true
+            echo "HTTP ${code}"
+            head -c 800 /tmp/body.json; echo
             echo
           }
 
-          probe "slash" "startedAt"
-          probe "slash" "startAt"
+          # Also probe the organization object itself to confirm auth
+          echo "---- org probe (Basic) ----"
+          code=$(curl -sS "${base}/v1/Organizations/${org}" \
+            -H "Accept: application/json" \
+            -H "OData-Version: 4.0" \
+            -H "Authorization: Basic ${basic}" \
+            -H "X-Organization-Id: ${org}" \
+            -o /tmp/org.json -w "%{http_code}") || true
+          echo "HTTP ${code}"
+          head -c 800 /tmp/org.json; echo; echo
+
+          # Try time entries with two timestamp fields and two auth styles
+          probe "startedAt + Basic" "startedAt" "Authorization: Basic ${basic}"
+          probe "startAt  + Basic" "startAt"  "Authorization: Basic ${basic}"
+
+          # Some tenants prefer ApiKey instead of Basic on workspace:
+          probe "startedAt + ApiKey" "startedAt" "Authorization: ApiKey ${secret}"
+          probe "startAt  + ApiKey" "startAt"  "Authorization: ApiKey ${secret}"
+
 
 
       # ---- Jibble → BigQuery ----
