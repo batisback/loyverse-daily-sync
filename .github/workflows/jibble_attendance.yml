@@ -46,83 +46,94 @@ jobs:
           gcloud config set project "${{ secrets.GCP_PROJECT_ID }}"
 
       # --- Probe Jibble OData for a known day (sanitized & verbose) ---
-      - name: Probe Jibble OData (sanitize org id + show status/body)
+      - name: Probe Jibble OData (try /odata and flat routes + auth variants)
         shell: bash
         env:
           JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
           JIBBLE_API_KEY_SECRET: ${{ secrets.JIBBLE_API_KEY_SECRET }}
           JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
         run: |
-          # Intentionally NOT using 'set -euo' so we always see output
-
-          DAY="2025-09-28"   # <-- change to a day you know has punches
+          # No 'set -euo' so we always see output
+          DAY="2025-09-28"   # <-- change to a date with known punches
           FROM="${DAY}T00:00:00+08:00"
           TO="${DAY}T23:59:59+08:00"
 
           base="https://workspace.prod.jibble.io"
 
-          # --- Sanitize secrets (strip CR/LF and outer quotes/spaces) ---
           raw_org="${JIBBLE_ORG_ID}"
           ORG="$(printf '%s' "${raw_org}" | tr -d '\r\n' | sed -e 's/^ *//' -e 's/ *$//' -e 's/^\"//' -e 's/\"$//')"
-
-          id="$(printf '%s' "${JIBBLE_API_KEY_ID}"       | tr -d '\r\n')"
+          id="$(printf '%s' "${JIBBLE_API_KEY_ID}"     | tr -d '\r\n')"
           secret="$(printf '%s' "${JIBBLE_API_KEY_SECRET}" | tr -d '\r\n')"
 
-          # Basic auth header (portable base64)
+          # Basic auth
           if base64 --help 2>&1 | grep -q -- "-w"; then
             basic=$(printf "%s" "${id}:${secret}" | base64 -w0)
           else
             basic=$(printf "%s" "${id}:${secret}" | base64)
           fi
 
-          echo "== SANITY =="
-          printf 'raw_org=[%s]\n' "${raw_org}"
-          printf 'ORG=[%s]\n' "${ORG}"
-          printf 'ORG length=%s\n' "${#ORG}"
-          printf 'ORG bytes (hex): '
-          printf '%s' "${ORG}" | od -An -tx1 | head -n1
-          echo
+          echo "== ORG sanity =="
+          printf 'ORG=[%s] len=%s\n' "${ORG}" "${#ORG}"
+          printf 'ORG hex: '; printf '%s' "${ORG}" | od -An -tx1 | head -n1; echo
 
-          url_org="${base}/v1/Organizations/${ORG}"
-          echo "== ORG PROBE (Basic) =="
-          echo "URL: ${url_org}"
-          curl -sS -i "${url_org}" \
-            -H "Accept: application/json" \
-            -H "OData-Version: 4.0" \
-            -H "Authorization: Basic ${basic}" \
-            -H "X-Organization-Id: ${ORG}" \
-            | head -n 40
-          echo
-          echo "---------------------------------------"
-          echo
+          probe() {
+            label="$1"; url="$2"; auth_style="$3"
+            echo "---- ${label} ----"
+            case "$auth_style" in
+              basic)
+                auth_header="Authorization: Basic ${basic}"
+                extra_headers=()
+                ;;
+              apikey)
+                auth_header="Authorization: ApiKey ${secret}"
+                extra_headers=()
+                ;;
+              xkey)
+                auth_header="" # no Authorization
+                extra_headers=(-H "X-API-KEY-ID: ${id}" -H "X-API-KEY-SECRET: ${secret}" -H "X-Organization-Id: ${ORG}")
+                ;;
+            esac
 
-          echo "== TIME ENTRIES (startedAt + Basic) =="
-          curl -sS -i -G "${base}/v1/Organizations/${ORG}/TimeEntries" \
-            --data-urlencode "\$filter=startedAt ge ${FROM} and startedAt le ${TO}" \
-            --data-urlencode "\$orderby=startedAt asc" \
-            --data-urlencode "\$top=5" \
-            --data-urlencode "\$format=json" \
-            -H "Accept: application/json" \
-            -H "OData-Version: 4.0" \
-            -H "Authorization: Basic ${basic}" \
-            -H "X-Organization-Id: ${ORG}" \
-            | head -n 60
-          echo
-          echo "---------------------------------------"
-          echo
+            # Build GET with -G for query params only if we detect '?$' marker
+            if echo "$url" | grep -q "__QS__"; then
+              baseurl="${url%%__QS__*}"
+              qs="${url#*__QS__}"
+              # qs contains a raw $filter etc.; use --data-urlencode lines:
+              code=$(curl -sS -i -G "$baseurl" \
+                --data-urlencode "$qs" \
+                -H "Accept: application/json" \
+                -H "OData-Version: 4.0" \
+                ${auth_header:+-H "$auth_header"} \
+                "${extra_headers[@]}" \
+                | tee /tmp/resp.txt | sed -n '1p' )
+            else
+              code=$(curl -sS -i "$url" \
+                -H "Accept: application/json" \
+                -H "OData-Version: 4.0" \
+                ${auth_header:+-H "$auth_header"} \
+                "${extra_headers[@]}" \
+                | tee /tmp/resp.txt | sed -n '1p' )
+            fi
+            # Print first 60 lines
+            head -n 60 /tmp/resp.txt
+            echo
+          }
 
-          echo "== TIME ENTRIES (startAt + Basic) =="
-          curl -sS -i -G "${base}/v1/Organizations/${ORG}/TimeEntries" \
-            --data-urlencode "\$filter=startAt ge ${FROM} and startAt le ${TO}" \
-            --data-urlencode "\$orderby=startAt asc" \
-            --data-urlencode "\$top=5" \
-            --data-urlencode "\$format=json" \
-            -H "Accept: application/json" \
-            -H "OData-Version: 4.0" \
-            -H "Authorization: Basic ${basic}" \
-            -H "X-Organization-Id: ${ORG}" \
-            | head -n 60
-          echo
+          # 1) OData with /odata/v1 (slash org)
+          probe "odata org (basic)"  "${base}/odata/v1/Organizations/${ORG}"                  basic
+          probe "odata org (apikey)" "${base}/odata/v1/Organizations/${ORG}"                  apikey
+          probe "odata org (x-keys)" "${base}/odata/v1/Organizations/${ORG}"                  xkey
+
+          # 2) OData TimeEntries collection under org
+          probe "odata TimeEntries (basic)"  "${base}/odata/v1/Organizations/${ORG}/TimeEntries__QS__\$filter=startedAt ge ${FROM} and startedAt le ${TO}&\$orderby=startedAt asc&\$top=5&\$format=json" basic
+          probe "odata TimeEntries (apikey)" "${base}/odata/v1/Organizations/${ORG}/TimeEntries__QS__\$filter=startedAt ge ${FROM} and startedAt le ${TO}&\$orderby=startedAt asc&\$top=5&\$format=json" apikey
+          probe "odata TimeEntries (x-keys)" "${base}/odata/v1/Organizations/${ORG}/TimeEntries__QS__\$filter=startedAt ge ${FROM} and startedAt le ${TO}&\$orderby=startedAt asc&\$top=5&\$format=json" xkey
+
+          # 3) Flat collection (no org in path) - some tenants expose this
+          probe "flat v1 TimeEntries (basic)"  "${base}/v1/TimeEntries__QS__\$filter=startedAt ge ${FROM} and startedAt le ${TO}&\$orderby=startedAt asc&\$top=5&\$format=json" basic
+          probe "flat v1 TimeEntries (apikey)" "${base}/v1/TimeEntries__QS__\$filter=startedAt ge ${FROM} and startedAt le ${TO}&\$orderby=startedAt asc&\$top=5&\$format=json" apikey
+          probe "flat v1 TimeEntries (x-keys)" "${base}/v1/TimeEntries__QS__\$filter=startedAt ge ${FROM} and startedAt le ${TO}&\$orderby=startedAt asc&\$top=5&\$format=json" xkey
+
 
       # ---- Jibble → BigQuery ----
       - name: Sync Jibble Attendance to BigQuery (raw)
