@@ -56,22 +56,19 @@ def build_headers():
     if not (API_KEY_ID and API_KEY_SECRET):
         fail("Missing Jibble credentials: set JIBBLE_API_KEY_ID and JIBBLE_API_KEY_SECRET.")
 
-    # Standard REST API headers. The key change is adding the 'Authorization' header.
+    # Standard REST API: Use ONLY the Authorization header.
+    # The API was rejecting requests that included both Authorization and X-API-* headers.
     headers = {
         "Accept": "application/json",
-        "X-API-KEY-ID": API_KEY_ID,
-        "X-API-KEY-SECRET": API_KEY_SECRET,
-        "Authorization": f"ApiKey {API_KEY_SECRET}" # <-- This is the required fix
+        "Authorization": f"ApiKey {API_KEY_SECRET}"
     }
 
-    # The OData (workspace) API uses Basic Auth instead, so we switch if needed
+    # The OData (workspace) API uses a different auth method (Basic Auth).
     if is_workspace_api():
         basic = base64.b64encode(f"{API_KEY_ID}:{API_KEY_SECRET}".encode()).decode()
         headers["Authorization"] = f"Basic {basic}"
-        # Remove the X-API headers as they are not needed for OData
-        headers.pop("X-API-KEY-ID", None)
-        headers.pop("X-API-KEY-SECRET", None)
 
+    # Add the Organization ID header if it's provided.
     if ORG_ID:
         headers["X-Organization-Id"] = ORG_ID
 
