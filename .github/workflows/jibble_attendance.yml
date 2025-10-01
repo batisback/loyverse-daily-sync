@@ -150,7 +150,7 @@ jobs:
           END_DATE: ${{ github.event.inputs.end_date }}
 
           # Workspace API host (script auto-switches to OData)
-          JIBBLE_API_BASE: https://workspace.prod.jibble.io
+          JIBBLE_API_BASE: https://api.jibble.io/api
           JIBBLE_ENTRIES_PATH: /v1/time-entries
         run: python sync_jibble_attendance.py
 
