@@ -56,17 +56,14 @@ def build_headers():
     if not (API_KEY_ID and API_KEY_SECRET):
         fail("Missing Jibble credentials: set JIBBLE_API_KEY_ID and JIBBLE_API_KEY_SECRET.")
 
-    # Standard REST API: Use ONLY the Authorization header.
-    # The API was rejecting requests that included both Authorization and X-API-* headers.
+    # Final attempt: Use Basic Authentication for all requests. This is a very
+    # common standard and is the most likely solution for a persistent 403 error.
+    basic_token = base64.b64encode(f"{API_KEY_ID}:{API_KEY_SECRET}".encode()).decode()
+
     headers = {
         "Accept": "application/json",
-        "Authorization": f"ApiKey {API_KEY_SECRET}"
+        "Authorization": f"Basic {basic_token}"
     }
-
-    # The OData (workspace) API uses a different auth method (Basic Auth).
-    if is_workspace_api():
-        basic = base64.b64encode(f"{API_KEY_ID}:{API_KEY_SECRET}".encode()).decode()
-        headers["Authorization"] = f"Basic {basic}"
 
     # Add the Organization ID header if it's provided.
     if ORG_ID:
