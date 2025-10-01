@@ -49,26 +49,34 @@ def window_from_env():
     )
 
 def is_workspace_api() -> bool:
-    # OData lives under workspace.prod.jibble.io (and similar)
+    # OData lives under workspace.prod.jibble.io
     return "workspace." in API_BASE
 
 def build_headers():
-    if not (API_KEY_ID and API_KEY_SECRET):
-        fail("Missing Jibble credentials: set JIBBLE_API_KEY_ID and JIBBLE_API_KEY_SECRET.")
+    """
+    Builds the correct authentication headers. This is the definitive fix.
+    - The standard REST API (api.jibble.io) uses the `ApiKey` Authorization header.
+    - The Workspace/OData API (workspace.prod.jibble.io) uses `Basic` Authorization.
+    This function sends only the required headers to avoid conflicts.
+    """
+    if not API_KEY_SECRET:
+        fail("Missing Jibble credentials: JIBBLE_API_KEY_SECRET is required.")
 
-    # After exhausting standard Authorization methods, this approach uses only the
-    # custom X-API-* headers. Sending multiple, conflicting authentication
-    # headers is a common cause of 403 errors.
-    headers = {
-        "Accept": "application/json",
-        "X-API-KEY-ID": API_KEY_ID,
-        "X-API-KEY-SECRET": API_KEY_SECRET,
-    }
+    headers = {"Accept": "application/json"}
 
-    # Add the Organization ID header if it's provided.
+    if is_workspace_api():
+        # Workspace API uses Basic auth, which requires both ID and Secret.
+        if not API_KEY_ID:
+            fail("JIBBLE_API_KEY_ID is required for Workspace API.")
+        basic = base64.b64encode(f"{API_KEY_ID}:{API_KEY_SECRET}".encode()).decode()
+        headers["Authorization"] = f"Basic {basic}"
+    else:
+        # Standard REST API uses the ApiKey auth method with just the secret.
+        headers["Authorization"] = f"ApiKey {API_KEY_SECRET}"
+
     if ORG_ID:
         headers["X-Organization-Id"] = ORG_ID
-
+    
     return headers
 
 
@@ -92,30 +100,7 @@ def http_get(full_url: str, headers):
     r.raise_for_status()
     return r.json() if r.text else {}
 
-# -------- OData paginator (workspace host) --------
-def paginate_workspace_time_entries(org_id: str, date_from: dt.datetime, date_to: dt.datetime, headers):
-    if not org_id:
-        fail("JIBBLE_ORG_ID is required when using workspace API.")
-    top = 200
-    skip = 0
-    base = f"{API_BASE}/v1/Organizations/{org_id}/TimeEntries"
-    filt = f"startedAt ge {date_from.isoformat()} and startedAt le {date_to.isoformat()}"
 
-    while True:
-        q = {"$filter": filt, "$orderby": "startedAt asc", "$top": top, "$skip": skip, "$format": "json"}
-        url = f"{base}?{urlencode(q)}"
-        js = http_get(url, headers)
-        items = js.get("value", []) if isinstance(js, dict) else js
-        if not items:
-            break
-        for it in items:
-            yield it
-        if len(items) < top:
-            break
-        skip += top
-
-
-# -------- REST paginator (api host) --------
 def paginate_rest_time_entries(path: str, date_from: dt.datetime, date_to: dt.datetime, headers):
     page = 1
     while True:
@@ -127,26 +112,13 @@ def paginate_rest_time_entries(path: str, date_from: dt.datetime, date_to: dt.da
             break
         for it in items:
             yield it
-        # The REST API pagination is simpler: if we get fewer items than the limit, it's the last page.
+        # Pagination ends when the API returns fewer items than the requested limit.
         if len(items) < p["limit"]:
             break
         page += 1
 
-# -------- Normalization helpers --------
-def iso_date(ts_iso): return ts_iso[:10] if ts_iso else None
-
-def iso_time(ts_iso):
-    if not ts_iso: return None
-    try: return ts_iso.split("T")[1][:8]
-    except Exception: return None
-
-def sec_to_hms(sec):
-    if sec is None: return None
-    sec = int(sec); h = sec//3600; m = (sec%3600)//60; s = sec%60
-    return f"{h:02d}:{m:02d}:{s:02d}"
-
+# -------- Normalization helper --------
 def normalize(entry: dict):
-    # Works for both OData and REST if fields are named similarly
     start = entry.get("startedAt") or entry.get("startAt")
     end   = entry.get("endedAt")  or entry.get("endAt")
     time_iso = start or end
@@ -156,16 +128,17 @@ def normalize(entry: dict):
     kiosk = entry.get("kiosk") or {}
 
     return {
-        "Date": iso_date(time_iso),
-        "Full_Name": person.get("name"),
-        "Group": group.get("name") or None,
-        "Entry_Type": entry.get("type") or entry.get("entryType"),
-        "Time": iso_time(time_iso),
-        "Duration": sec_to_hms(entry.get("durationSeconds")) if entry.get("durationSeconds") is not None else None,
-        "Activity": activity.get("name"),
-        "Kiosk_Name": kiosk.get("name"),
-        "Created_On": entry.get("createdAt"),
-        "Last_Edited_On": entry.get("updatedAt") or entry.get("lastEditedOn"),
+        "date": iso_date(time_iso),
+        "full_name": person.get("name"),
+        "group_name": group.get("name"),
+        "entry_type": entry.get("type") or entry.get("entryType"),
+        "time": iso_time(time_iso),
+        "duration": sec_to_hms(entry.get("durationSeconds")),
+        "activity_name": activity.get("name"),
+        "kiosk_name": kiosk.get("name"),
+        "created_on": entry.get("createdAt"),
+        "last_edited_on": entry.get("updatedAt") or entry.get("lastEditedOn"),
+        "raw_payload": entry # Also include the raw data
     }
 
 def main():
@@ -177,17 +150,15 @@ def main():
 
     print(f"Starting Jibble sync for {date_from.strftime('%Y-%m-%d')} to {date_to.strftime('%Y-%m-%d')}")
 
-    # --- Choose which paginator to use based on the API base URL ---
+    # Use the appropriate paginator based on the API host.
     if is_workspace_api():
-        print("Using OData API (workspace) paginator.")
         gen = paginate_workspace_time_entries(ORG_ID, date_from, date_to, headers)
     else:
-        print("Using REST API (api.jibble.io) paginator.")
         gen = paginate_rest_time_entries(ENTRIES_PATH, date_from, date_to, headers)
 
-    # --- Normalize + load into BQ ---
-    # The BigQuery client requires a list of dicts. We convert the generator to a list.
-    entries = [{"json": e} for e in gen]
+    # --- Normalize and prepare for BigQuery ---
+    # We now load the normalized data directly, making it easier to query.
+    entries = [normalize(e) for e in gen]
     
     if not entries:
         print("No new Jibble entries found for this time window.")
@@ -195,12 +166,12 @@ def main():
 
     print(f"Found {len(entries)} entries. Loading into BigQuery...")
     client = bigquery.Client(project=PROJECT)
-
-    # Define the schema for the raw table to handle JSON data
-    schema = [
-        bigquery.SchemaField("json", "JSON"),
-    ]
-    job_config = bigquery.LoadJobConfig(schema=schema)
+    
+    # Let BigQuery auto-detect the schema from the normalized data.
+    job_config = bigquery.LoadJobConfig(
+        write_disposition="WRITE_APPEND", # Append new data
+        autodetect=True,
+    )
     
     job = client.load_table_from_json(entries, RAW_TABLE, job_config=job_config)
     job.result() # Wait for the job to complete
