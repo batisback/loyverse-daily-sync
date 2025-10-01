@@ -46,7 +46,7 @@ jobs:
           gcloud config set project "${{ secrets.GCP_PROJECT_ID }}"
 
       # --- Probe Jibble OData for known day ---
-      - name: Probe Jibble OData for a known day
+      - name: Probe Jibble OData for a known day (safe-encoded)
         shell: bash
         env:
           JIBBLE_API_KEY_ID: ${{ secrets.JIBBLE_API_KEY_ID }}
@@ -54,7 +54,7 @@ jobs:
           JIBBLE_ORG_ID: ${{ secrets.JIBBLE_ORG_ID }}
         run: |
           set -e
-          DAY="2025-09-28"   # << change this to a day you know has punches
+          DAY="2025-09-28"   # <-- change to a day you know has punches
           FROM="${DAY}T00:00:00+08:00"
           TO="${DAY}T23:59:59+08:00"
 
@@ -66,26 +66,26 @@ jobs:
 
           probe() {
             name="$1"
-            url="$2"
-            echo "---- ${name} ----"
-            echo "GET $url"
-            curl -sS "$url" \
+            field="$2"
+            echo "---- ${name} (${field}) ----"
+            echo "GET ${base}/v1/Organizations/${org}/TimeEntries"
+            curl -sS -G "${base}/v1/Organizations/${org}/TimeEntries" \
+              --data-urlencode "\$filter=${field} ge ${FROM} and ${field} le ${TO}" \
+              --data-urlencode "\$top=5" \
+              --data-urlencode "\$format=json" \
               -H "Accept: application/json" \
               -H "OData-Version: 4.0" \
               -H "Authorization: Basic ${basic}" \
               -H "X-Organization-Id: ${org}" \
-              -D /tmp/h.txt | head -c 600 || true
+              -D /tmp/h.txt | head -c 800 || true
             echo
             head -n 1 /tmp/h.txt || true
             echo
           }
 
-          # Try BOTH common timestamp fields and path styles
-          probe "slash-startedAt" \
-            "${base}/v1/Organizations/${org}/TimeEntries?\$filter=startedAt ge ${FROM} and startedAt le ${TO}&\$top=5&\$format=json"
+          probe "slash" "startedAt"
+          probe "slash" "startAt"
 
-          probe "slash-startAt" \
-            "${base}/v1/Organizations/${org}/TimeEntries?\$filter=startAt ge ${FROM} and startAt le ${TO}&\$top=5&\$format=json"
 
       # ---- Jibble → BigQuery ----
       - name: Sync Jibble Attendance to BigQuery (raw)
