@@ -55,24 +55,22 @@ def is_workspace_api() -> bool:
 def build_headers():
     """
     Builds the correct authentication headers. This is the definitive fix.
-    - The standard REST API (api.jibble.io) uses the `ApiKey` Authorization header.
-    - The Workspace/OData API (workspace.prod.jibble.io) uses `Basic` Authorization.
-    This function sends only the required headers to avoid conflicts.
+    This version uses only the X-API-* headers for the REST API, which is the
+    final logical step after exhausting other methods.
     """
-    if not API_KEY_SECRET:
-        fail("Missing Jibble credentials: JIBBLE_API_KEY_SECRET is required.")
+    if not (API_KEY_ID and API_KEY_SECRET):
+        fail("Missing Jibble credentials: JIBBLE_API_KEY_ID and JIBBLE_API_KEY_SECRET are required.")
 
     headers = {"Accept": "application/json"}
 
     if is_workspace_api():
         # Workspace API uses Basic auth, which requires both ID and Secret.
-        if not API_KEY_ID:
-            fail("JIBBLE_API_KEY_ID is required for Workspace API.")
         basic = base64.b64encode(f"{API_KEY_ID}:{API_KEY_SECRET}".encode()).decode()
         headers["Authorization"] = f"Basic {basic}"
     else:
-        # Standard REST API uses the ApiKey auth method with just the secret.
-        headers["Authorization"] = f"ApiKey {API_KEY_SECRET}"
+        # Standard REST API: Use only the custom X-API headers.
+        headers["X-API-KEY-ID"] = API_KEY_ID
+        headers["X-API-KEY-SECRET"] = API_KEY_SECRET
 
     if ORG_ID:
         headers["X-Organization-Id"] = ORG_ID
@@ -152,12 +150,12 @@ def main():
 
     # Use the appropriate paginator based on the API host.
     if is_workspace_api():
+        # This part of the code is for the OData API, which is not being used.
         gen = paginate_workspace_time_entries(ORG_ID, date_from, date_to, headers)
     else:
         gen = paginate_rest_time_entries(ENTRIES_PATH, date_from, date_to, headers)
 
     # --- Normalize and prepare for BigQuery ---
-    # We now load the normalized data directly, making it easier to query.
     entries = [normalize(e) for e in gen]
     
     if not entries:
