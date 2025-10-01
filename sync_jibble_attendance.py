@@ -10,7 +10,11 @@ import base64
 
 # ========= Config via ENV =========
 API_BASE = os.environ.get("JIBBLE_API_BASE", "https://api.jibble.io/api").rstrip("/")
-# NOTE: ENTRIES_PATH is only used for REST host (api.jibble.io). On workspace host we ignore it.
+# The '/api' path segment seems to be incorrect for the REST endpoint.
+# This correction removes it if it exists, targeting the correct base URL.
+if API_BASE.endswith("/api"):
+    API_BASE = API_BASE[:-4]
+
 ENTRIES_PATH = os.environ.get("JIBBLE_ENTRIES_PATH", "/v1/time-entries")
 
 # Jibble auth (API Credentials screen)
@@ -53,14 +57,15 @@ def is_workspace_api() -> bool:
     return "workspace." in API_BASE
 
 def build_headers():
-    if not API_KEY_SECRET:
-        fail("Missing Jibble credentials: set JIBBLE_API_KEY_SECRET.")
+    if not (API_KEY_ID and API_KEY_SECRET):
+        fail("Missing Jibble credentials: set JIBBLE_API_KEY_ID and JIBBLE_API_KEY_SECRET.")
 
-    # After trying Basic and ApiKey, the next standard to try is Bearer token auth.
-    # Some APIs expect the secret key to be passed this way.
+    # Reverting to the documented authentication method, assuming the URL was the real issue.
+    # This uses both the ApiKey in Authorization and the ID as a separate header.
     headers = {
         "Accept": "application/json",
-        "Authorization": f"Bearer {API_KEY_SECRET}"
+        "Authorization": f"ApiKey {API_KEY_SECRET}",
+        "X-API-KEY-ID": API_KEY_ID,
     }
 
     # Add the Organization ID header if it's provided.
