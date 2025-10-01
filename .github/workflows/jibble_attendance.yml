@@ -141,6 +141,7 @@ jobs:
             | head -n 60
           echo
 
+
       # ---- Jibble → BigQuery ----
       - name: Sync Jibble Attendance to BigQuery (raw)
         env:
