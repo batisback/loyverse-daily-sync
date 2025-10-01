@@ -102,7 +102,6 @@ jobs:
           probe "startAt  + ApiKey" "startAt"  "Authorization: ApiKey ${secret}"
 
 
-
       # ---- Jibble → BigQuery ----
       - name: Sync Jibble Attendance to BigQuery (raw)
         env:
