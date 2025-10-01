@@ -53,16 +53,14 @@ def is_workspace_api() -> bool:
     return "workspace." in API_BASE
 
 def build_headers():
-    if not (API_KEY_ID and API_KEY_SECRET):
-        fail("Missing Jibble credentials: set JIBBLE_API_KEY_ID and JIBBLE_API_KEY_SECRET.")
+    if not API_KEY_SECRET:
+        fail("Missing Jibble credentials: set JIBBLE_API_KEY_SECRET.")
 
-    # Final attempt: Use Basic Authentication for all requests. This is a very
-    # common standard and is the most likely solution for a persistent 403 error.
-    basic_token = base64.b64encode(f"{API_KEY_ID}:{API_KEY_SECRET}".encode()).decode()
-
+    # After trying Basic and ApiKey, the next standard to try is Bearer token auth.
+    # Some APIs expect the secret key to be passed this way.
     headers = {
         "Accept": "application/json",
-        "Authorization": f"Basic {basic_token}"
+        "Authorization": f"Bearer {API_KEY_SECRET}"
     }
 
     # Add the Organization ID header if it's provided.
