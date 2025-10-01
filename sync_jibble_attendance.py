@@ -9,12 +9,8 @@ import base64
 
 
 # ========= Config via ENV =========
+# Reverting to the original API_BASE as the 404 error confirmed this path is correct.
 API_BASE = os.environ.get("JIBBLE_API_BASE", "https://api.jibble.io/api").rstrip("/")
-# The '/api' path segment seems to be incorrect for the REST endpoint.
-# This correction removes it if it exists, targeting the correct base URL.
-if API_BASE.endswith("/api"):
-    API_BASE = API_BASE[:-4]
-
 ENTRIES_PATH = os.environ.get("JIBBLE_ENTRIES_PATH", "/v1/time-entries")
 
 # Jibble auth (API Credentials screen)
@@ -60,12 +56,13 @@ def build_headers():
     if not (API_KEY_ID and API_KEY_SECRET):
         fail("Missing Jibble credentials: set JIBBLE_API_KEY_ID and JIBBLE_API_KEY_SECRET.")
 
-    # Reverting to the documented authentication method, assuming the URL was the real issue.
-    # This uses both the ApiKey in Authorization and the ID as a separate header.
+    # With the URL path confirmed, we now try the most robust industry-standard
+    # authentication method: Basic Authentication.
+    basic_token = base64.b64encode(f"{API_KEY_ID}:{API_KEY_SECRET}".encode()).decode()
+
     headers = {
         "Accept": "application/json",
-        "Authorization": f"ApiKey {API_KEY_SECRET}",
-        "X-API-KEY-ID": API_KEY_ID,
+        "Authorization": f"Basic {basic_token}",
     }
 
     # Add the Organization ID header if it's provided.
