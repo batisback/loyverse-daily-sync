@@ -137,7 +137,7 @@ def merge_into_final(table_type, date_str):
 # 🚀 MAIN EXECUTION (Daily Run with 48-Hour Buffer)
 # ==============================================================================
 today = datetime.now()
-PULL_START_DATE = (today - timedelta(days=2)).replace(hour=0, minute=0, second=0, microsecond=0)
+PULL_START_DATE = (today - timedelta(days=6)).replace(hour=0, minute=0, second=0, microsecond=0)
 PULL_END_DATE = (today - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 current_date = PULL_START_DATE
