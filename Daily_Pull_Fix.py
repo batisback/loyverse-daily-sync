@@ -40,7 +40,6 @@ SCHEMA_RECEIPTS = [
     bigquery.SchemaField("store_id", "STRING"),
 ]
 
-# --- THE FIX IS HERE: Schema updated to match the API response ---
 SCHEMA_SHIFTS = [
     bigquery.SchemaField("id", "STRING"),
     bigquery.SchemaField("store_id", "STRING"),
@@ -59,8 +58,17 @@ SCHEMA_SHIFTS = [
 SCHEMAS = {"receipts": SCHEMA_RECEIPTS, "shifts": SCHEMA_SHIFTS}
 
 # ==============================================================================
-# 🛠️ HELPER FUNCTIONS (Restored to original versions)
+# 🛠️ HELPER FUNCTIONS
 # ==============================================================================
+
+def now_ph():
+    # GitHub runners are usually UTC; PH is UTC+8
+    return datetime.utcnow() + timedelta(hours=8)
+
+def ph_to_utc_z(dt_ph):
+    dt_utc = dt_ph - timedelta(hours=8)
+    return dt_utc.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+
 def create_table_if_not_exists(table_id, schema):
     try:
         client.get_table(table_id)
@@ -86,16 +94,20 @@ def pull_and_upload(entity_name, url, key_name, utc_start, utc_end, date_str):
     print(f"\n📦 Pulling {entity_name} for {date_str}...")
     data_collected = []
     params = {"created_at_min": utc_start, "created_at_max": utc_end, "limit": 250}
+
     while True:
         response = requests.get(url, headers=HEADERS, params=params)
         if response.status_code != 200:
             print(f"❌ API Error {response.status_code} for {entity_name} on {date_str}: {response.text}")
             return False
+
         json_data = response.json()
         data_collected.extend(json_data.get(key_name, []))
         next_cursor = json_data.get("cursor")
+
         if not next_cursor:
             break
+
         params["cursor"] = next_cursor
         time.sleep(0.5)
 
@@ -106,10 +118,12 @@ def pull_and_upload(entity_name, url, key_name, utc_start, utc_end, date_str):
     df = pd.json_normalize(data_collected, sep="_")
     schema = SCHEMAS[entity_name]
     df = prepare_dataframe(df, schema)
+
     table_id = f"{project_id}.{dataset_id}.{entity_name}_{date_str}"
     job_config = bigquery.LoadJobConfig(schema=schema, write_disposition="WRITE_TRUNCATE")
     job = client.load_table_from_dataframe(df, table_id, job_config=job_config)
     job.result()
+
     print(f"✅ Uploaded {len(df)} {entity_name} records to: {table_id}")
     return True
 
@@ -117,7 +131,9 @@ def merge_into_final(table_type, date_str):
     temp_table_id = f"{project_id}.{dataset_id}.{table_type}_{date_str}"
     final_table_id = f"{project_id}.{dataset_id}.new_final_{table_type}"
     id_field = "receipt_number" if table_type == "receipts" else "id"
+
     create_table_if_not_exists(final_table_id, SCHEMAS[table_type])
+
     merge_sql = f"""
         MERGE `{final_table_id}` AS target
         USING `{temp_table_id}` AS source
@@ -125,38 +141,48 @@ def merge_into_final(table_type, date_str):
         WHEN NOT MATCHED THEN INSERT ROW
         WHEN MATCHED THEN UPDATE SET {', '.join([f'target.{f.name} = source.{f.name}' for f in SCHEMAS[table_type]])}
     """
+
     print(f"🔁 Merging {table_type}_{date_str} into new_final_{table_type}...")
-    try:
-        client.query(merge_sql).result()
-        print(f"✅ Merge complete for new_final_{table_type}")
-    except Exception as e:
-        print(f"❌ Merge failed for {table_type} on {date_str}: {e}")
-        raise
+    client.query(merge_sql).result()
+    print(f"✅ Merge complete for new_final_{table_type}")
 
 # ==============================================================================
-# 🚀 MAIN EXECUTION (Daily Run with 48-Hour Buffer)
+# 🚀 MAIN EXECUTION (10AM / 10PM PH rolling window)
+# Pull from yesterday 00:00 → today 10:00 (AM run) OR today 22:00 (PM run)
 # ==============================================================================
-today = datetime.now()
-PULL_START_DATE = (today - timedelta(days=2)).replace(hour=0, minute=0, second=0, microsecond=0)
-PULL_END_DATE = (today - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
-current_date = PULL_START_DATE
-while current_date <= PULL_END_DATE:
-    date_to_process = current_date
-    print(f"\n==================== PROCESSING DATE: {date_to_process.strftime('%Y-%m-%d')} ====================")
-    start_ph = date_to_process
-    end_ph = start_ph.replace(hour=23, minute=59, second=59, microsecond=999999)
-    utc_start = (start_ph - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
-    utc_end = (end_ph - timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
-    date_str = start_ph.strftime("%Y_%m_%d")
+ph_now = now_ph()
 
-    if pull_and_upload("receipts", RECEIPT_URL, "receipts", utc_start, utc_end, date_str):
-        merge_into_final("receipts", date_str)
-    
-    if pull_and_upload("shifts", SHIFT_URL, "shifts", utc_start, utc_end, date_str):
-        merge_into_final("shifts", date_str)
+today_00 = ph_now.replace(hour=0, minute=0, second=0, microsecond=0)
+yesterday_00 = today_00 - timedelta(days=1)
 
-    current_date += timedelta(days=1)
+# Decide whether this is AM or PM run based on PH time at runtime.
+# If you schedule exactly 10AM and 10PM PH, this will behave correctly.
+if ph_now.hour < 16:
+    cutoff_ph = today_00.replace(hour=10, minute=0, second=0, microsecond=0)
+    run_label = "10AM"
+else:
+    cutoff_ph = today_00.replace(hour=22, minute=0, second=0, microsecond=0)
+    run_label = "10PM"
 
-print("\n\n✅ Daily 48-hour sync complete! ✅")
+# If job runs earlier than the cutoff time, clamp to now (so you still pull "up to now")
+if cutoff_ph > ph_now:
+    cutoff_ph = ph_now
 
+utc_start = ph_to_utc_z(yesterday_00)
+utc_end = ph_to_utc_z(cutoff_ph)
+
+print(f"\n==================== {run_label} RUN ====================")
+print(f"PH Window : {yesterday_00} → {cutoff_ph}")
+print(f"UTC Window: {utc_start} → {utc_end}")
+
+# Use a rolling temp table name so reruns overwrite safely
+date_str = "rolling_window"
+
+if pull_and_upload("receipts", RECEIPT_URL, "receipts", utc_start, utc_end, date_str):
+    merge_into_final("receipts", date_str)
+
+if pull_and_upload("shifts", SHIFT_URL, "shifts", utc_start, utc_end, date_str):
+    merge_into_final("shifts", date_str)
+
+print("\n✅ Rolling window sync complete! ✅")
