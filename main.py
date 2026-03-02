@@ -31,7 +31,8 @@ store_name_map = {
     '20c5e48d-dc7c-4ad0-8f3f-f833338e5284': 'Alpha Simply', 'b9b66c09-dbfe-4ea4-9489-05b3320ddce2': 'Alliance Simply',
     '61928236-425a-40c8-9b21-38eafd0115f1': 'Trial Store 2', 'f4bf31ef-12a8-4758-b941-8b8be11d7c23': 'Skyrise 3',
     'a254eb83-5e8b-4ff6-86f9-a26d47114288': 'JY SB', 'eeb48eea-cb55-4265-bfca-810755421497': 'Lexmark SB',
-    '17ca4bad-695c-4180-9b3a-c43db1e86e7f': 'CDU SB', 'ba5b398f-38c9-45c0-9ca9-cbe5552cbc71': 'WWR Sky2'
+    '17ca4bad-695c-4180-9b3a-c43db1e86e7f': 'CDU SB', 'ba5b398f-38c9-45c0-9ca9-cbe5552cbc71': 'WWR Sky2',
+    '5d320e27-c8a2-4396-8d1c-a29672bd9b57': 'Med Mall SB'
 }
 
 # --- 2. ANALYSIS FUNCTIONS ---
