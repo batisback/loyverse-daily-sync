@@ -186,3 +186,4 @@ if pull_and_upload("shifts", SHIFT_URL, "shifts", utc_start, utc_end, date_str):
     merge_into_final("shifts", date_str)
 
 print("\n✅ Rolling window sync complete! ✅")
+
