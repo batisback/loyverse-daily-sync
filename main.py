@@ -89,7 +89,7 @@ def generate_sales_dip_anomalies(all_shift_data):
     return anomalies
 
 def generate_ratio_anomalies(client, store_map):
-    """Anomaly detection for Americano/Spanish Latte ratios AND Spanish Latte sales dips."""
+    """Anomaly detection for Americano/SB Spanish ratios AND SB Spanish sales dips."""
     print("📊 Generating 'Ratio Anomalies' report...")
     query = f"""
     WITH ShiftsInRange AS (
@@ -100,7 +100,7 @@ def generate_ratio_anomalies(client, store_map):
     ReceiptItemsInRange AS (
         SELECT created_at, store_id,
                CASE
-                   WHEN JSON_EXTRACT_SCALAR(item, '$.item_name') IN ("Spanish Latte", "SB Spanish") THEN "Spanish Latte"
+                   WHEN JSON_EXTRACT_SCALAR(item, '$.item_name') IN ("Spanish Latte", "SB Spanish") THEN "SB Spanish"
                    ELSE JSON_EXTRACT_SCALAR(item, '$.item_name')
                END AS name,
                CAST(JSON_EXTRACT_SCALAR(item, '$.quantity') AS FLOAT64) AS quantity
@@ -117,7 +117,7 @@ def generate_ratio_anomalies(client, store_map):
     
     pivot_df = data.groupby(["shift_number", "shift_opening_time", "store_id", "name"])["quantity"].sum().unstack(fill_value=0).reset_index()
     if 'Americano' not in pivot_df.columns: pivot_df['Americano'] = 0
-    if 'Spanish Latte' not in pivot_df.columns: pivot_df['Spanish Latte'] = 0
+    if 'SB Spanish' not in pivot_df.columns: pivot_df['SB Spanish'] = 0
     pivot_df['store_name'] = pivot_df['store_id'].map(store_map).fillna('Unknown Store')
     pivot_df['shift_opening_time'] = pd.to_datetime(pivot_df['shift_opening_time']).dt.tz_convert('Asia/Manila')
     day_map = {0: 'Mon', 1: 'Tue', 2: 'Wed', 3: 'Thu', 4: 'Fri', 5: 'Sat', 6: 'Sun'}
@@ -130,32 +130,32 @@ def generate_ratio_anomalies(client, store_map):
     pivot_df['shift_slot'] = pivot_df['day_name'] + '-' + pivot_df['time_slot']
     analysis_df = pivot_df[pivot_df['time_slot'] != 'Other'].copy()
 
-    baselines = analysis_df.groupby(['store_name', 'shift_slot'])[['Americano', 'Spanish Latte']].agg(['mean', 'std']).reset_index()
+    baselines = analysis_df.groupby(['store_name', 'shift_slot'])[['Americano', 'SB Spanish']].agg(['mean', 'std']).reset_index()
     baselines.columns = ['_'.join(col).strip('_') for col in baselines.columns.values]
     baselines = baselines.rename(columns={
-        'Americano_mean': 'avg_americano', 'Spanish Latte_mean': 'avg_spanish_latte',
-        'Spanish Latte_std': 'std_spanish_latte'
+        'Americano_mean': 'avg_americano', 'SB Spanish_mean': 'avg_sb_spanish',
+        'SB Spanish_std': 'std_sb_spanish'
     })
-    baselines['std_spanish_latte'] = baselines['std_spanish_latte'].fillna(0)
+    baselines['std_sb_spanish'] = baselines['std_sb_spanish'].fillna(0)
 
     analysis_df = pd.merge(analysis_df, baselines, on=['store_name', 'shift_slot'], how='left')
     
     analysis_period_start = pd.Timestamp.now(tz='Asia/Manila') - pd.Timedelta(days=ANALYSIS_DAYS)
     recent_shifts_df = analysis_df[analysis_df['shift_opening_time'] >= analysis_period_start].copy()
     
-    recent_shifts_df['americano_vs_spanish_latte_pct'] = np.where(recent_shifts_df['Spanish Latte'] > 0, (recent_shifts_df['Americano'] / recent_shifts_df['Spanish Latte']), np.nan)
-    recent_shifts_df.loc[(recent_shifts_df['Spanish Latte'] == 0) & (recent_shifts_df['Americano'] > 0), 'americano_vs_spanish_latte_pct'] = 9.99
-    recent_shifts_df['is_ratio_anomaly'] = recent_shifts_df['americano_vs_spanish_latte_pct'] > 0.6
+    recent_shifts_df['americano_vs_sb_spanish_pct'] = np.where(recent_shifts_df['SB Spanish'] > 0, (recent_shifts_df['Americano'] / recent_shifts_df['SB Spanish']), np.nan)
+    recent_shifts_df.loc[(recent_shifts_df['SB Spanish'] == 0) & (recent_shifts_df['Americano'] > 0), 'americano_vs_sb_spanish_pct'] = 9.99
+    recent_shifts_df['is_ratio_anomaly'] = recent_shifts_df['americano_vs_sb_spanish_pct'] > 0.6
 
-    recent_shifts_df['latte_anomaly_threshold'] = recent_shifts_df['avg_spanish_latte'] - (1.8 * recent_shifts_df['std_spanish_latte'])
-    recent_shifts_df['is_latte_dip_anomaly'] = (recent_shifts_df['Spanish Latte'] < recent_shifts_df['latte_anomaly_threshold']) & (recent_shifts_df['std_spanish_latte'] > 0)
+    recent_shifts_df['latte_anomaly_threshold'] = recent_shifts_df['avg_sb_spanish'] - (1.8 * recent_shifts_df['std_sb_spanish'])
+    recent_shifts_df['is_latte_dip_anomaly'] = (recent_shifts_df['SB Spanish'] < recent_shifts_df['latte_anomaly_threshold']) & (recent_shifts_df['std_sb_spanish'] > 0)
     
     anomalies = recent_shifts_df[recent_shifts_df['is_ratio_anomaly'] | recent_shifts_df['is_latte_dip_anomaly']].copy()
     
     def get_reason(row):
         reasons = []
         if row['is_ratio_anomaly']: reasons.append("High Americano Ratio")
-        if row['is_latte_dip_anomaly']: reasons.append("Low Spanish Latte Sales")
+        if row['is_latte_dip_anomaly']: reasons.append("Low SB Spanish Sales")
         return ", ".join(reasons)
         
     if not anomalies.empty:
