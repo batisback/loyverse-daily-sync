@@ -154,7 +154,7 @@ def merge_into_final(table_type, date_str):
 ph_now = now_ph()
 
 today_00 = ph_now.replace(hour=0, minute=0, second=0, microsecond=0)
-yesterday_00 = today_00 - timedelta(days=1)
+yesterday_00 = today_00 - timedelta(days=5)
 
 # Decide whether this is AM or PM run based on PH time at runtime.
 # If you schedule exactly 10AM and 10PM PH, this will behave correctly.
